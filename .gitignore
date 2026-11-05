@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# uv
+.venv/
+.uv/
+
+# Tooling
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Local runtime data (per-instance Dolphin user dirs, captures, etc.)
+.gc-mcp/
+data/
+captures/
+*.log
+
+# OS
+.DS_Store
