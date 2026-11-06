@@ -129,3 +129,27 @@ class TestConfigBuilder:
         text = (tmp_path / "Config" / "Dolphin.ini").read_text()
         assert "[Input]" in text
         assert "BackgroundInput = True" in text
+
+    def test_dolphin_ini_hotkeys_require_focus(self, tmp_path) -> None:
+        # In headless (--batch) mode the render window is never Qt-active, so
+        # Dolphin closes its *hotkey* input gate (MAIN_FOCUSED_HOTKEYS, default
+        # true) and silently drops pause/save/load/step hotkeys. The builder must
+        # write [General] HotkeysRequireFocus = False to keep that gate open.
+        cfg = InstanceConfig(user_dir=tmp_path)
+        self._build(cfg)
+        text = (tmp_path / "Config" / "Dolphin.ini").read_text()
+        assert "[General]" in text
+        assert "HotkeysRequireFocus = False" in text
+
+    def test_hotkeys_ini_device_line(self, tmp_path) -> None:
+        # The generated Hotkeys.ini must bind hotkeys to a device that actually
+        # resolves in a headless X11 build (XInput2 keyboard, named after the
+        # pointer). The stock "Keyboard" device is not registered and would leave
+        # every hotkey unbound.
+        cfg = InstanceConfig(user_dir=tmp_path)
+        self._build(cfg)
+        text = (tmp_path / "Config" / "Hotkeys.ini").read_text()
+        assert text.startswith("[Hotkeys]\n")
+        assert "Device = XInput2/0/Virtual core pointer" in text
+        assert "General/Toggle Pause = F10" in text
+        assert "Frame Advance/Frame Advance = F8" in text

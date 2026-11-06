@@ -73,3 +73,24 @@ class DolphinPlatform(Platform):
 
     def memory_write(self, address: int, data: bytes) -> None:
         self.instance.memory.write(address, data)
+
+    # ------------------------------------------------------------------
+    # Emulator control (pause / step / save / load)
+    # ------------------------------------------------------------------
+    def emulator_toggle_pause(self) -> dict:
+        return self.instance.emulator_toggle_pause()
+
+    def emulator_step_frame(self) -> dict:
+        return self.instance.emulator_step_frame()
+
+    def emulator_save_state(self, slot: int) -> dict:
+        return self.instance.emulator_save_state(slot)
+
+    def emulator_load_state(self, slot: int) -> dict:
+        return self.instance.emulator_load_state(slot)
+
+    def emulator_freeze(self) -> dict:
+        return self.instance.emulator_freeze()
+
+    def emulator_unfreeze(self) -> dict:
+        return self.instance.emulator_unfreeze()

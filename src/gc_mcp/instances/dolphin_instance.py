@@ -25,6 +25,7 @@ from ..capture import CaptureBackend, FrameDumpCapture, Xvfb, XvfbCapture
 from ..config import ServerConfig, parse_resolution, resolve_gpu_accel
 from ..controllers import DolphinPipesController
 from ..errors import StartupError
+from ..keyboard import KeyboardInjector
 from ..memory import ProcessVMMemory
 from .config_builder import InstanceConfig, InstanceConfigBuilder
 
@@ -74,6 +75,7 @@ class DolphinInstance:
         self._controller: DolphinPipesController | None = None
         self._capture: CaptureBackend | None = None
         self._memory: ProcessVMMemory | None = None
+        self._keyboard: KeyboardInjector | None = None
         self._log_path = spec.user_dir / "dolphin.log"
         self._started_at: float | None = None
         self._stop_requested = False
@@ -100,6 +102,29 @@ class DolphinInstance:
         if self._memory is None:
             raise StartupError("memory backend is not initialised")
         return self._memory
+
+    @property
+    def keyboard(self) -> KeyboardInjector:
+        """A keyboard injector for driving Dolphin hotkeys.
+
+        Requires an X display (the ``xvfb`` capture backend) so we can send
+        keystrokes to Dolphin's render window.
+        """
+        if self._keyboard is None:
+            if self.spec.display is None:
+                raise StartupError(
+                    "keyboard hotkey injection requires an X display; start the "
+                    "instance with the 'xvfb' capture backend"
+                )
+            self._keyboard = KeyboardInjector(self.spec.display)
+        return self._keyboard
+
+    @property
+    def keyboard_ready(self) -> bool:
+        """Whether keyboard hotkey injection is usable right now."""
+        if self.spec.display is None or not self.running:
+            return False
+        return KeyboardInjector.available()
 
     @property
     def pid(self) -> int | None:
@@ -319,6 +344,7 @@ class DolphinInstance:
             "native_resolution": self.spec.native_resolution or self.server_config.native_resolution,
             "controller_ready": self._controller_ready(),
             "memory_ready": self._memory_ready(),
+            "keyboard_ready": self.keyboard_ready,
             "display": self.spec.display,
             "log_path": str(self._log_path),
             "started_at": self._started_at,
@@ -382,6 +408,50 @@ class DolphinInstance:
             self._capture.close()
         if self._xvfb is not None:
             self._xvfb.stop()
+
+    # ------------------------------------------------------------------
+    # Emulator control (hotkeys / process signals)
+    # ------------------------------------------------------------------
+    def emulator_toggle_pause(self) -> dict:
+        """Toggle Dolphin's internal pause via the Toggle Pause hotkey (F10)."""
+        return self.keyboard.toggle_pause().to_dict()
+
+    def emulator_step_frame(self) -> dict:
+        """Advance exactly one frame via the Frame Advance hotkey."""
+        return self.keyboard.step_frame().to_dict()
+
+    def emulator_save_state(self, slot: int) -> dict:
+        """Save a state to ``slot`` via Shift+F{slot}."""
+        return self.keyboard.save_state(slot).to_dict()
+
+    def emulator_load_state(self, slot: int) -> dict:
+        """Load a state from ``slot`` via F{slot}."""
+        return self.keyboard.load_state(slot).to_dict()
+
+    def emulator_freeze(self) -> dict:
+        """Hard-freeze the Dolphin process with SIGSTOP (always works, no X).
+
+        This is a coarse OS-level pause. It is not compatible with frame-advance
+        (the process is suspended so it cannot process hotkeys); use
+        ``emulator_toggle_pause`` for a TAS-friendly pause.
+        """
+        if self._proc is None or self._proc.poll() is not None:
+            return {"ok": False, "error": "instance is not running"}
+        try:
+            os.kill(self._proc.pid, signal.SIGSTOP)
+        except OSError as exc:
+            return {"ok": False, "error": f"could not freeze process: {exc}"}
+        return {"ok": True, "pid": self._proc.pid, "state": "frozen"}
+
+    def emulator_unfreeze(self) -> dict:
+        """Resume a frozen Dolphin process with SIGCONT."""
+        if self._proc is None or self._proc.poll() is not None:
+            return {"ok": False, "error": "instance is not running"}
+        try:
+            os.kill(self._proc.pid, signal.SIGCONT)
+        except OSError as exc:
+            return {"ok": False, "error": f"could not unfreeze process: {exc}"}
+        return {"ok": True, "pid": self._proc.pid, "state": "running"}
 
     def __repr__(self) -> str:
         return f"<DolphinInstance id={self.spec.instance_id} running={self.running}>"

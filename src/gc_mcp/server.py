@@ -16,6 +16,7 @@ import atexit
 import base64
 import os
 import signal
+import struct
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -60,7 +61,35 @@ async def _server_lifespan(app: MCPServer) -> AsyncIterator[None]:
         _shutdown_instances()
 
 
-mcp = MCPServer("gc-mcp", lifespan=_server_lifespan)
+#: Best-practice guidance surfaced to the model as server ``instructions`` (the
+#: MCP-native way to tell the model how to drive this server effectively).
+SERVER_INSTRUCTIONS = (
+    "You are controlling a Dolphin GameCube emulator. Each instance is a "
+    "separate game running headless under Xvfb.\n\n"
+    "Efficiency and latency:\n"
+    "- Input actions have real latency (a keystroke/tap reaches the game only on "
+    "a later frame). Prefer batching: use gc_controller_sequence to press a run "
+    "of buttons in a single atomic call instead of many gc_controller_press / "
+    "gc_controller_release round-trips.\n"
+    "- Screen capture is slow and expensive (render + encode). Prefer doing "
+    "several inputs *blind* (e.g. a whole menu-selection sequence) before "
+    "re-checking the screen with gc_capture_screenshot. One capture per "
+    "meaningful state change, not per button.\n\n"
+    "Memory:\n"
+    "- GameCube is big-endian. When reading/writing memory with "
+    "gc_memory_read_struct / gc_memory_write_struct, prefix the format with '>' "
+    "(or '!'), e.g. \">12f\" for a 3x4 float matrix.\n\n"
+    "Emulator control:\n"
+    "- Use gc_emulator_toggle_pause to pause (e.g. before inspecting memory), "
+    "gc_emulator_step_frame to advance one frame while paused, and "
+    "gc_emulator_save_state / gc_emulator_load_state (slots 1-8) to checkpoint.\n"
+    "- These are driven by Dolphin hotkeys injected via xdotool; they need the "
+    "instance's X display and xdotool installed. gc_emulator_freeze / "
+    "gc_emulator_unfreeze are a coarse OS-level pause fallback.\n"
+)
+
+
+mcp = MCPServer("gc-mcp", instructions=SERVER_INSTRUCTIONS, lifespan=_server_lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -424,6 +453,137 @@ def gc_memory_write(instance_id: str, address: int, data: str) -> dict:
     return {"address": hex(address), "length": len(raw), "written": len(raw)}
 
 
+@mcp.tool()
+def gc_memory_read_struct(instance_id: str, address: int, fmt: str) -> dict:
+    """Read memory at ``address`` and unpack it with a Python ``struct`` format.
+
+    ``fmt`` is a Python :mod:`struct` format string, e.g. ``">12f"`` for twelve
+    big-endian floats (a 3x4 transform matrix), ``">II"`` for two big-endian
+    u32 values, or ``">4h"`` for four big-endian s16 values.
+
+    GameCube is big-endian, so include a byte-order prefix in ``fmt``: ``>``
+    (big-endian, standard sizes) or ``!`` (network order). If you omit it the
+    format uses the host's native byte order/sizes, which is almost never what
+    you want for a GameCube, so it is recommended to always prefix with ``>``.
+
+    The result ``values`` is a list of the unpacked values in format order.
+    """
+    inst = _instance(instance_id)
+    try:
+        size = struct.calcsize(fmt)
+    except struct.error as exc:
+        return {"address": hex(address), "fmt": fmt, "error": f"invalid struct format: {exc}"}
+    data = inst.memory_read(address, size)
+    values = struct.unpack(fmt, data)
+    return {
+        "address": hex(address),
+        "fmt": fmt,
+        "size": size,
+        "values": list(values),
+    }
+
+
+@mcp.tool()
+def gc_memory_write_struct(instance_id: str, address: int, fmt: str,
+                           values: list[Any]) -> dict:
+    """Pack ``values`` with a Python ``struct`` format and write them to memory.
+
+    ``fmt`` is a Python :mod:`struct` format string (see
+    ``gc_memory_read_struct`` for the byte-order notes). ``values`` is a list of
+    the values to pack, in format order, e.g. for ``">12f"`` pass 12 floats.
+
+    Returns the number of bytes written.
+    """
+    inst = _instance(instance_id)
+    try:
+        size = struct.calcsize(fmt)
+        packed = struct.pack(fmt, *values)
+    except struct.error as exc:
+        return {"address": hex(address), "fmt": fmt, "error": f"invalid struct format/values: {exc}"}
+    inst.memory_write(address, packed)
+    return {"address": hex(address), "fmt": fmt, "size": size, "written": len(packed)}
+
+
+# ---------------------------------------------------------------------------
+# Emulator control (pause / step / save / load)
+# ---------------------------------------------------------------------------
+@mcp.tool()
+def gc_emulator_toggle_pause(instance_id: str) -> dict:
+    """Toggle the emulator's pause state (Dolphin's Toggle Pause hotkey, F10).
+
+    Use this to pause a game (e.g. before inspecting memory or screen), then
+    resume. When paused, ``gc_emulator_step_frame`` advances exactly one frame.
+
+    This injects a keystroke into the instance's X display via ``xdotool``, so
+    it requires the ``xvfb`` capture backend and ``xdotool`` installed. On a
+    headless ``--batch`` instance Dolphin's ``[Input] BackgroundInput = True``
+    keeps the input gate open so the hotkey is received without window focus.
+    """
+    inst = _instance(instance_id)
+    return inst.emulator_toggle_pause()
+
+
+@mcp.tool()
+def gc_emulator_step_frame(instance_id: str) -> dict:
+    """Advance exactly one frame when the emulator is paused.
+
+    Sends Dolphin's Frame Advance hotkey. Unlike ``Step Into`` (a CPU-debugger
+    step), Frame Advance steps one *video frame*, which is what a TAS tool wants.
+
+    The instance config binds Frame Advance to ``F8`` by default (see
+    ``dolphin_hotkey_get``/``dolphin_hotkey_set``). If it is unbound this tool
+    returns ``ok=False`` and no frame advances.
+    """
+    inst = _instance(instance_id)
+    return inst.emulator_step_frame()
+
+
+@mcp.tool()
+def gc_emulator_save_state(instance_id: str, slot: int) -> dict:
+    """Save a save-state to ``slot`` (1-8) via Shift+F{slot}.
+
+    Only slots 1-8 have a Dolphin default hotkey binding (see
+    ``dolphin_hotkey_get``).
+    """
+    if not 1 <= slot <= 8:
+        return {"ok": False, "error": f"slot must be 1-8, got {slot}"}
+    inst = _instance(instance_id)
+    return inst.emulator_save_state(slot)
+
+
+@mcp.tool()
+def gc_emulator_load_state(instance_id: str, slot: int) -> dict:
+    """Load a save-state from ``slot`` (1-8) via F{slot}.
+
+    Only slots 1-8 have a Dolphin default hotkey binding (see
+    ``dolphin_hotkey_get``).
+    """
+    if not 1 <= slot <= 8:
+        return {"ok": False, "error": f"slot must be 1-8, got {slot}"}
+    inst = _instance(instance_id)
+    return inst.emulator_load_state(slot)
+
+
+@mcp.tool()
+def gc_emulator_freeze(instance_id: str) -> dict:
+    """Hard-freeze the Dolphin process with SIGSTOP.
+
+    This is a coarse OS-level pause that always works (no X display or xdotool
+    needed). It is *not* compatible with frame-advance (the process is suspended,
+    so it cannot process hotkeys); use ``gc_emulator_toggle_pause`` for a
+    TAS-friendly pause.
+    """
+    inst = _instance(instance_id)
+    return inst.emulator_freeze()
+
+
+@mcp.tool()
+def gc_emulator_unfreeze(instance_id: str) -> dict:
+    """Resume a frozen Dolphin process with SIGCONT."""
+    inst = _instance(instance_id)
+    return inst.emulator_unfreeze()
+
+
 # ---------------------------------------------------------------------------
 # Dolphin-only configuration tools
 # ---------------------------------------------------------------------------
@@ -488,6 +648,69 @@ def dolphin_config_apply_profile(instance_id: str, profile: dict[str, dict[str, 
     with open(ini, "w", encoding="utf-8") as fh:
         cp.write(fh)
     return {"instance_id": instance_id, "keys_written": applied}
+
+
+@mcp.tool()
+def dolphin_hotkey_get(instance_id: str, key: str) -> dict:
+    """Read a Dolphin emulator hotkey binding.
+
+    ``key`` is the Hotkeys.ini key ``<group>/<control>`` (e.g.
+    ``General/Toggle Pause``, ``Save State/Save State Slot 1``). Returns the
+    current binding expression (``F10``, ``@(Shift+F1)``), or None if the hotkey
+    is unbound. This is Dolphin-only (real hardware has no emulator hotkeys).
+    """
+    from .keyboard import DEFAULT_HOTKEYS, read_hotkeys_ini
+
+    inst = _instance(instance_id)
+    path = inst.instance.spec.user_dir / "Config" / "Hotkeys.ini"
+    values = read_hotkeys_ini(path)
+    if not path.exists():
+        # No Hotkeys.ini means Dolphin loads its built-in defaults.
+        values = DEFAULT_HOTKEYS
+    binding = values.get(key)
+    return {
+        "instance_id": instance_id,
+        "key": key,
+        "binding": binding,
+        "bound": bool(binding),
+    }
+
+
+@mcp.tool()
+def dolphin_hotkey_set(instance_id: str, key: str, expression: str) -> dict:
+    """Set (or clear) a Dolphin emulator hotkey binding.
+
+    ``key`` is the Hotkeys.ini key ``<group>/<control>``. ``expression`` is the
+    binding in Dolphin input syntax, e.g. ``F8`` for a single key or
+    ``@(Shift+F8)`` for a combination. Pass ``expression=""`` to unbind it.
+
+    Dolphin loads ``Hotkeys.ini`` all-or-nothing, so this preserves every
+    existing binding and the built-in default set, then applies ``key``. A
+    running instance may need a restart for the change to take effect. This is
+    Dolphin-only.
+
+    Common keys (see ``gc_emulator_*`` tools): ``General/Toggle Pause``,
+    ``Frame Advance/Frame Advance``, ``Save State/Save State Slot 1..8``,
+    ``Load State/Load State Slot 1..8``.
+    """
+    from .keyboard import DEFAULT_HOTKEYS, read_hotkeys_ini, write_hotkeys_ini
+
+    inst = _instance(instance_id)
+    path = inst.instance.spec.user_dir / "Config" / "Hotkeys.ini"
+    values = DEFAULT_HOTKEYS.copy()
+    if path.exists():
+        values.update(read_hotkeys_ini(path))
+    if expression:
+        values[key] = expression
+    else:
+        values.pop(key, None)
+    write_hotkeys_ini(path, values)
+    return {
+        "instance_id": instance_id,
+        "key": key,
+        "binding": expression or None,
+        "bound": bool(expression),
+    }
 
 
 # ---------------------------------------------------------------------------

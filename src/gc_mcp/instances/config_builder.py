@@ -8,6 +8,8 @@ unmodified emulator as a GameCube with the peripherals we want:
   and the SP1 (Broadband Adapter / BBA) device and its settings.
 * ``Config/GCPadNew.ini`` - maps each GameCube controller port to a Dolphin
   "Pipes" device (``Pipe/0/ctrlN``) so we can drive it over named FIFOs.
+* ``Config/Hotkeys.ini``  - emulator hotkeys (pause, frame-advance, save/load
+  state). Written as a *complete* set because Dolphin loads it all-or-nothing.
 * ``Config/GFX.ini``      - video backend / renderer settings.
 * ``Pipes/``              - the named FIFOs the Pipes backend scans at startup.
 
@@ -22,6 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from ..errors import ConfigError
+from ..keyboard import DEFAULT_HOTKEYS
 
 # ---------------------------------------------------------------------------
 # Dolphin EXI device types (SerialPort1 / SP1), from EXI_Device.h.
@@ -155,6 +158,7 @@ class InstanceConfigBuilder:
             cfg.config_dir.mkdir(parents=True, exist_ok=True)
             self._write_dolphin_ini()
             self._write_gcpad_new_ini()
+            self._write_hotkeys_ini()
             self._write_gfx_ini()
             cfg.pipes_dir.mkdir(parents=True, exist_ok=True)
             self._create_fifos()
@@ -201,14 +205,22 @@ class InstanceConfigBuilder:
         core.update(cfg.extra_core)
 
         # In headless ``--batch`` mode Dolphin's render window never receives
-        # focus, so ``Core::UpdateInputGate()`` closes the input gate unless
-        # background input is enabled. With the gate closed, *all* controller
-        # input is silently dropped (see InputReference::State() in
-        # ControlReference.cpp). Force ``[Input] BackgroundInput = True`` so the
-        # virtual Pipe controller reaches the game even without a focused window.
+        # focus, so ``Core::UpdateInputGate()`` closes the input gate. With the
+        # gate closed, *all* controller input is silently dropped (see
+        # InputReference::State() in ControlReference.cpp) and *every* hotkey
+        # that needs focus (Toggle Pause, Save/Load State, Frame Advance) is
+        # ignored. Force ``[Input] BackgroundInput = True`` so the virtual Pipe
+        # controller reaches the game, and ``[General] HotkeysRequireFocus =
+        # False`` so the hotkey input gate stays open even without a focused
+        # window. (``HotkeysRequireFocus`` is ``MAIN_FOCUSED_HOTKEYS``; default
+        # is true, which would silently drop all hotkeys in batch mode.)
         input_section = {"BackgroundInput": "True"}
+        general_section = {"HotkeysRequireFocus": "False"}
 
-        self._write_ini_file("Dolphin.ini", {"Core": core, "Input": input_section})
+        self._write_ini_file(
+            "Dolphin.ini",
+            {"Core": core, "Input": input_section, "General": general_section},
+        )
 
     # ------------------------------------------------------------------
     # GCPadNew.ini
@@ -272,6 +284,22 @@ class InstanceConfigBuilder:
             if kport == port:
                 pad[kkey] = value
         return pad
+
+    # ------------------------------------------------------------------
+    # Hotkeys.ini
+    # ------------------------------------------------------------------
+    def _write_hotkeys_ini(self) -> None:
+        """Write a complete ``Hotkeys.ini`` so emulator hotkeys work.
+
+        Dolphin loads ``Hotkeys.ini`` all-or-nothing: if the file exists, any
+        control not listed is left *unbound*. We therefore write the full default
+        binding set (pause, save/load state, etc.) plus a Frame Advance binding,
+        so ``gc_emulator_step_frame`` works out of the box.
+        """
+        from ..keyboard import build_hotkey_ini
+
+        path = self.cfg.config_dir / "Hotkeys.ini"
+        path.write_text(build_hotkey_ini(DEFAULT_HOTKEYS), encoding="utf-8")
 
     # ------------------------------------------------------------------
     # GFX.ini
