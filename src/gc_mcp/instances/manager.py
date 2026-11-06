@@ -70,6 +70,7 @@ class InstanceManager:
               bba_mode: str | None = None, bba_mac: str | None = None,
               video_backend: str | None = None, capture_backend: str | None = None,
               memory_backend: str | None = None, internal_resolution: int | None = None,
+              native_resolution: str | None = None, gpu_accel: str | None = None,
               extra_core: dict | None = None, extra_pad: dict | None = None,
               extra_args: list | None = None, **kwargs) -> dict:
         """Create and start a new Dolphin instance."""
@@ -99,6 +100,8 @@ class InstanceManager:
             memory_backend=memory_backend or self.config.memory_backend,
             display=display,
             internal_resolution=internal_resolution,
+            native_resolution=native_resolution,
+            gpu_accel=gpu_accel,
             extra_core=extra_core or {},
             extra_pad=extra_pad or {},
             extra_args=extra_args or [],

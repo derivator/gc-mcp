@@ -119,3 +119,13 @@ class TestConfigBuilder:
         text = (tmp_path / "Config" / "GFX.ini").read_text()
         assert "GFXBackend = Vulkan" in text
         assert "InternalResolution = 2" in text
+
+    def test_dolphin_ini_background_input(self, tmp_path) -> None:
+        # Headless (--batch) mode never focuses the render window, so Dolphin
+        # closes its input gate and drops all controller input unless background
+        # input is enabled. The builder must always write [Input] BackgroundInput.
+        cfg = InstanceConfig(user_dir=tmp_path)
+        self._build(cfg)
+        text = (tmp_path / "Config" / "Dolphin.ini").read_text()
+        assert "[Input]" in text
+        assert "BackgroundInput = True" in text

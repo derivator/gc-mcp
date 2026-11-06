@@ -12,14 +12,19 @@ The server runs over stdio, which is what an MCP client such as opencode uses.
 
 from __future__ import annotations
 
+import atexit
 import base64
+import os
+import signal
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
-from .config import ServerConfig
+from .config import ServerConfig, shm_usage
 from .instances import InstanceManager
 from .platform import resolve_platform
 from .platform.dolphin import DolphinPlatform
@@ -30,7 +35,32 @@ __all__ = ["main", "mcp", "manager", "config"]
 config = ServerConfig()
 manager = InstanceManager(config)
 
-mcp = MCPServer("gc-mcp")
+
+def _shutdown_instances() -> None:
+    """Best-effort stop of every running Dolphin subprocess.
+
+    Called from the server's lifespan ``__aexit__`` (i.e. when the stdio
+    connection closes and the MCP server is asked to shut down), from a
+    SIGTERM/SIGINT handler, and from ``atexit`` as a last resort. ``shutdown()``
+    is idempotent, so calling it more than once is safe.
+    """
+    try:
+        manager.shutdown()
+    except Exception:
+        # Never let cleanup failures mask the shutdown path.
+        pass
+
+
+@asynccontextmanager
+async def _server_lifespan(app: MCPServer) -> AsyncIterator[None]:
+    """Server lifespan: stop all Dolphin subprocesses on exit."""
+    try:
+        yield
+    finally:
+        _shutdown_instances()
+
+
+mcp = MCPServer("gc-mcp", lifespan=_server_lifespan)
 
 
 # ---------------------------------------------------------------------------
@@ -57,11 +87,36 @@ def gc_server_info() -> dict:
         "dolphin_binary": config.dolphin_binary,
         "base_dir": str(config.base_dir),
         "gpu_available": config.gpu_available,
+        "gpu_device": config.gpu_device,
+        "gpu_accel": config.gpu_accel,
+        "effective_gpu_accel": config.effective_gpu_accel(),
+        "vglrun_available": config.vglrun_available(),
+        "native_resolution": config.native_resolution,
         "default_video_backend": config.default_video_backend,
         "default_bba_mode": config.default_bba_mode,
         "capture_backend": config.capture_backend,
         "memory_backend": config.memory_backend,
         "instances": len(manager),
+    }
+
+
+@mcp.tool()
+def gc_gpu_info() -> dict:
+    """Report GPU rendering diagnostics for this host.
+
+    Useful for deciding whether a GameCube instance will render on a real GPU or
+    fall back to Mesa software (llvmpipe), and for diagnosing the ``/dev/shm``
+    SIGBUS crash that occurs when the shared-memory filesystem is too small for
+    Dolphin's emulated RAM.
+    """
+    return {
+        "gpu_available": config.gpu_available,
+        "gpu_device": config.gpu_device,
+        "gpu_accel": config.gpu_accel,
+        "effective_gpu_accel": config.effective_gpu_accel(),
+        "vglrun_available": config.vglrun_available(),
+        "vgl_3d_display": config.vgl_3d_display,
+        "shm": shm_usage(),
     }
 
 
@@ -117,6 +172,8 @@ def gc_instance_start(
     capture_backend: str | None = None,
     memory_backend: str | None = None,
     internal_resolution: int | None = None,
+    native_resolution: str | None = None,
+    gpu_accel: str | None = None,
     extra_core: dict[str, str] | None = None,
 ) -> dict:
     """Start a new Dolphin instance booting the given ROM/DOL/ELF.
@@ -132,6 +189,8 @@ def gc_instance_start(
         capture_backend: auto, xvfb, or framedump.
         memory_backend: process_vm or dolphin_engine.
         internal_resolution: 1x/2x/... internal resolution.
+        native_resolution: GameCube native framebuffer "WxH" (default 640x480).
+        gpu_accel: auto/none/software/vgl/vgl-egl/vgl-glx (default auto).
         extra_core: Extra Dolphin.ini [Core] overrides.
     """
     return manager.start(
@@ -144,6 +203,8 @@ def gc_instance_start(
         capture_backend=capture_backend,
         memory_backend=memory_backend,
         internal_resolution=internal_resolution,
+        native_resolution=native_resolution,
+        gpu_accel=gpu_accel,
         extra_core=extra_core,
     )
 
@@ -183,7 +244,9 @@ def gc_capture_backends() -> dict:
             {
                 "name": "xvfb",
                 "description": "Capture the X display (Xvfb) with ffmpeg/xwd. "
-                "Needs Xvfb installed.",
+                "The display is sized to the GameCube native resolution so the "
+                "output has no black borders. Needs Xvfb installed. Optionally "
+                "set `crop` (W:H:X:Y) via gc_capture_configure as an escape hatch.",
             },
             {
                 "name": "framedump",
@@ -247,6 +310,23 @@ def gc_controller_release(instance_id: str, port: int, button: str) -> dict:
     inst = _instance(instance_id)
     inst.controller_release(port, button)
     return {"port": port, "button": button, "state": "released"}
+
+
+@mcp.tool()
+def gc_controller_press_once(instance_id: str, port: int, button: str,
+                             hold_duration: float = 200.0) -> dict:
+    """Tap a button once: press, hold for hold_duration ms, then release.
+
+    This is the recommended way to send a button press for agent use. It is a
+    single atomic action — you do not need to pair gc_controller_press and
+    gc_controller_release. The button is always released afterwards.
+
+    hold_duration defaults to 200 ms. Pass a larger value to hold the button
+    longer (e.g. to hold START through a loading screen).
+    """
+    inst = _instance(instance_id)
+    inst.controller_press_once(port, button, hold_duration)
+    return {"port": port, "button": button, "hold_duration": hold_duration, "state": "released"}
 
 
 @mcp.tool()
@@ -413,10 +493,29 @@ def dolphin_config_apply_profile(instance_id: str, profile: dict[str, dict[str, 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+def _signal_handler(signum: int, _frame: Any) -> None:
+    """Stop running Dolphin subprocesses before exiting on SIGTERM/SIGINT."""
+    _shutdown_instances()
+    # Re-raise the signal's default action so the process terminates with the
+    # conventional exit status for that signal (rather than 0).
+    signal.signal(signum, signal.SIG_DFL)
+    os.kill(os.getpid(), signum)
+
+
 def main() -> None:
     """Run the gc-mcp server over stdio."""
     # Ensure the data dirs exist before serving.
     config.ensure_dirs()
+
+    # Make sure any spawned Dolphin subprocesses are stopped when the server is
+    # asked to shut down. ``mcp.run()`` blocks until the stdio connection
+    # closes; the lifespan hook above handles that path. Signals (SIGTERM /
+    # SIGINT) are handled here because they may bypass the lifespan's exit.
+    # ``atexit`` is a final fallback for normal interpreter shutdown.
+    atexit.register(_shutdown_instances)
+    signal.signal(signal.SIGTERM, _signal_handler)
+    signal.signal(signal.SIGINT, _signal_handler)
+
     mcp.run()
 
 

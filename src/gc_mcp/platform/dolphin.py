@@ -38,6 +38,9 @@ class DolphinPlatform(Platform):
     def controller_release(self, port: int, button: str) -> None:
         self.instance.controller.release(port, button)
 
+    def controller_press_once(self, port: int, button: str, hold_duration: float = 200.0) -> None:
+        self.instance.controller.press_once(port, button, hold_duration)
+
     def controller_set_stick(self, port: int, stick: str, x: float, y: float) -> None:
         self.instance.controller.set_stick(port, stick, x, y)
 

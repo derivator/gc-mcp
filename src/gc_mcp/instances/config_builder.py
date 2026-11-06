@@ -200,7 +200,15 @@ class InstanceConfigBuilder:
 
         core.update(cfg.extra_core)
 
-        self._write_ini_file("Dolphin.ini", {"Core": core})
+        # In headless ``--batch`` mode Dolphin's render window never receives
+        # focus, so ``Core::UpdateInputGate()`` closes the input gate unless
+        # background input is enabled. With the gate closed, *all* controller
+        # input is silently dropped (see InputReference::State() in
+        # ControlReference.cpp). Force ``[Input] BackgroundInput = True`` so the
+        # virtual Pipe controller reaches the game even without a focused window.
+        input_section = {"BackgroundInput": "True"}
+
+        self._write_ini_file("Dolphin.ini", {"Core": core, "Input": input_section})
 
     # ------------------------------------------------------------------
     # GCPadNew.ini
@@ -222,6 +230,11 @@ class InstanceConfigBuilder:
         cfg = self.cfg
         pad: dict[str, str] = {
             "Device": device,
+            # Force the emulated controller to always be "connected", so input is
+            # delivered even if Dolphin can't detect the (virtual) pipe device as a
+            # real, present controller. Value is Dolphin's bool ini serialization
+            # ("True"/"False"); see Common/StringUtil.cpp ValueToString(bool).
+            "Options/Always Connected": "True",
             # Buttons
             "Buttons/A": "`Button A`",
             "Buttons/B": "`Button B`",

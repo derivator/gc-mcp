@@ -43,6 +43,10 @@ class Platform(ABC):
         ...
 
     @abstractmethod
+    def controller_press_once(self, port: int, button: str, hold_duration: float = 200.0) -> None:
+        ...
+
+    @abstractmethod
     def controller_set_stick(self, port: int, stick: str, x: float, y: float) -> None:
         ...
 

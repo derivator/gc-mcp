@@ -3,9 +3,15 @@
 Dolphin renders into a virtual X server. We grab the root window and encode a
 PNG. Requires ``Xvfb`` and either ``ffmpeg`` (preferred) or ``xwd``.
 
-If a hardware GPU render node is present (``/dev/dri/renderD*``) we leave the
-GL backend alone; otherwise the instance should run Dolphin with Mesa's software
-``llvmpipe`` renderer (handled by the instance / video backend selection).
+The display is sized (by the instance) to the GameCube native resolution scaled
+by the internal-resolution multiplier, so the rendered window fills the whole
+Xvfb screen and the capture has no black borders. ``crop`` is an optional escape
+hatch for backends/displays that cannot be sized to match exactly.
+
+If a hardware GPU render node is present (``/dev/dri/card*``) the instance may
+launch Dolphin under VirtualGL (``vglrun``) so OpenGL renders on the real GPU;
+otherwise the instance runs Dolphin with Mesa's software ``llvmpipe`` renderer
+(handled by the instance / video backend selection).
 """
 
 from __future__ import annotations
@@ -65,12 +71,21 @@ class XvfbCapture(CaptureBackend):
 
     name = "xvfb"
 
-    def __init__(self, display: int | str, screen_size: str = "1280x720") -> None:
+    def __init__(self, display: int | str, screen_size: str = "1280x720",
+                 crop: str | None = None) -> None:
         if isinstance(display, int):
             self.display = f":{display}"
         else:
             self.display = display if str(display).startswith(":") else f":{display}"
         self.screen_size = screen_size
+        #: Optional crop rectangle "W:H:X:Y"; None means no crop (the display is
+        #: expected to already be sized to the game output).
+        self.crop = crop
+
+    def _crop_args(self) -> list[str]:
+        if not self.crop:
+            return []
+        return ["-vf", f"crop={self.crop}"]
 
     def _run(self, cmd: list[str]) -> subprocess.CompletedProcess:
         try:
@@ -97,10 +112,9 @@ class XvfbCapture(CaptureBackend):
                 self.screen_size,
                 "-i",
                 self.display,
-                "-frames:v",
-                "1",
-                str(dest_path),
             ]
+            cmd += self._crop_args()
+            cmd += ["-frames:v", "1", str(dest_path)]
             result = self._run(cmd)
             if result.returncode == 0 and dest_path.exists():
                 return dest_path
@@ -130,7 +144,12 @@ class XvfbCapture(CaptureBackend):
         )
 
     def configure(self, **opts: object) -> dict:
-        for key in ("display", "screen_size"):
+        for key in ("display", "screen_size", "crop"):
             if key in opts:
                 setattr(self, key, opts[key])
-        return {"backend": self.name, "display": self.display, "screen_size": self.screen_size}
+        return {
+            "backend": self.name,
+            "display": self.display,
+            "screen_size": self.screen_size,
+            "crop": self.crop,
+        }

@@ -26,11 +26,26 @@ game state.
   directory, with its own controllers, capture backend and memory backend.
 - **Controller port** — one of the four GameCube controller ports (`0`–`3`).
 - **Capture backend** — how rendered frames are grabbed:
-  - `xvfb` (default): Dolphin runs under a virtual X server (Xvfb) using OpenGL
-    (hardware GPU if `/dev/dri` is present, else Mesa `llvmpipe`); frames are
-    captured with `ffmpeg`/`xwd` into PNG.
+  - `xvfb` (default): Dolphin runs under a virtual X server (Xvfb) using OpenGL;
+    the display is sized to the GameCube native resolution so the capture has no
+    black borders. Frames are captured with `ffmpeg`/`xwd` into PNG. Rendering
+    happens on a real GPU (via VirtualGL `vglrun`) when available, else Mesa
+    `llvmpipe`.
   - `framedump`: Dolphin's built-in frame dump (`Movie.DumpFrames`) to PNG, as a
     fallback that needs no display server.
+
+## GPU rendering
+
+By default `gpu_accel=auto`: if VirtualGL (`vglrun`) is installed and a GPU DRM
+device is present under `/dev/dri`, Dolphin is launched under `vglrun -d
+<device>` so OpenGL renders on the real GPU instead of Mesa software `llvmpipe`.
+The rendered frame is blitted onto the Xvfb display, so captures still come from
+`ffmpeg`/`xwd`. Without `vglrun`, it falls back to software rendering.
+
+The `Xvfb` screen is sized to the GameCube native resolution (`640x480` default)
+scaled by the instance's `internal_resolution`, so the render window fills the
+screen and the capture has no black borders. `crop` (`W:H:X:Y`) is available as
+an optional escape hatch via `gc_capture_configure`, but sizing is preferred.
 
 ## Controller interface
 
@@ -84,6 +99,10 @@ Environment variables (all optional):
 | `GC_MCP_BBA_MODE` | `ipc` | BBA mode (`ipc`, `hle`, `xlink`, `tap`, `tapserver`, or empty/`none`) |
 | `GC_MCP_BBA_MAC_PREFIX` | `00:09:bf` | Must be `00:09:bf` or `00:17:ab` |
 | `GC_MCP_CAPTURE_BACKEND` | `auto` | `auto`, `xvfb`, `framedump` |
+| `GC_MCP_NATIVE_RES` | `640x480` | GameCube native framebuffer `WxH` (display/capture sizing) |
+| `GC_MCP_GPU_ACCEL` | `auto` | `auto`, `none`, `software`, `vgl`, `vgl-egl`, `vgl-glx` |
+| `GC_MCP_GPU_DEVICE` | auto-detected | GPU DRM device path (e.g. `/dev/dri/card2`) |
+| `GC_MCP_VGL_3D_DISPLAY` | empty | 3D X server display for VirtualGL's GLX back end (e.g. `:0.0`) |
 | `GC_MCP_MEMORY_BACKEND` | `process_vm` | `process_vm` or `dolphin_engine` |
 
 ## Docker
@@ -103,4 +122,4 @@ All tools take an `instance_id` where relevant.
 - `gc_controller_press`, `gc_controller_release`, `gc_controller_set_stick`, `gc_controller_set_trigger`, `gc_controller_sequence`, `gc_controller_sequence_cancel`, `gc_controller_get_state`, `gc_controller_reset`
 - `gc_memory_read`, `gc_memory_write`
 - `dolphin_config_get`, `dolphin_config_set`, `dolphin_config_apply_profile`
-- `gc_server_info`
+- `gc_server_info`, `gc_gpu_info`

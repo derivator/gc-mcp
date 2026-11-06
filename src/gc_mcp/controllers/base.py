@@ -175,6 +175,28 @@ class ControllerBackend(ABC):
         pass
 
     # ------------------------------------------------------------------
+    # High-level action
+    # ------------------------------------------------------------------
+    def press_once(self, port: int, button: str, hold_duration_ms: float = 200.0) -> None:
+        """Press a button, hold it for ``hold_duration_ms``, then release it.
+
+        This is the recommended way to *tap* a button for agent use. Unlike
+        :meth:`press` / :meth:`release`, which require the caller to pair them
+        at the right time, ``press_once`` performs the whole press → hold →
+        release cycle in a single call and only returns once the button has been
+        released. The button is always released even if an error occurs.
+
+        ``hold_duration_ms`` defaults to 200 ms.
+        """
+        if hold_duration_ms < 0:
+            raise ValueError("hold_duration_ms must be >= 0")
+        self.press(port, button)
+        try:
+            time.sleep(hold_duration_ms / 1000.0)
+        finally:
+            self.release(port, button)
+
+    # ------------------------------------------------------------------
     # Sequence API
     # ------------------------------------------------------------------
     def sequence(self, port: int, steps: list[dict], loop: bool = False) -> dict:

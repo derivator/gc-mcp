@@ -47,6 +47,9 @@ class GameCubeHWPlatform(Platform):
     def controller_release(self, port: int, button: str) -> None:
         self._unsupported("controller_release")
 
+    def controller_press_once(self, port: int, button: str, hold_duration: float = 200.0) -> None:
+        self._unsupported("controller_press_once")
+
     def controller_set_stick(self, port: int, stick: str, x: float, y: float) -> None:
         self._unsupported("controller_set_stick")
 

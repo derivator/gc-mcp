@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from ..capture import CaptureBackend, FrameDumpCapture, Xvfb, XvfbCapture
-from ..config import ServerConfig
+from ..config import ServerConfig, parse_resolution, resolve_gpu_accel
 from ..controllers import DolphinPipesController
 from ..errors import StartupError
 from ..memory import ProcessVMMemory
@@ -50,6 +50,11 @@ class InstanceSpec:
     #: X display number (allocated by the manager); used when capture is xvfb.
     display: int | None = None
     internal_resolution: int | None = None
+    #: GameCube native framebuffer resolution ("WxH"); falls back to server config.
+    native_resolution: str | None = None
+    #: Requested GPU-acceleration mode (auto/none/software/vgl/vgl-egl/vgl-glx);
+    #: falls back to server config.
+    gpu_accel: str | None = None
     #: Extra Dolphin.ini ``[Core]`` overrides (e.g. ``{"SkipIPL": "False"}``).
     extra_core: dict[str, str] = field(default_factory=dict)
     #: Extra GCPadNew.ini overrides keyed by ``(port, key)``.
@@ -72,6 +77,8 @@ class DolphinInstance:
         self._log_path = spec.user_dir / "dolphin.log"
         self._started_at: float | None = None
         self._stop_requested = False
+        self._gpu_mode: str | None = None
+        self._screen_size_value: str | None = None
 
     # ------------------------------------------------------------------
     # Resource getters (created lazily / on start)
@@ -145,7 +152,9 @@ class DolphinInstance:
         if isinstance(self._capture, XvfbCapture):
             if spec.display is None:
                 raise StartupError("xvfb capture backend requires a display number")
-            self._xvfb = Xvfb(spec.display)
+            screen_size = self._screen_size(cfg)
+            self._screen_size_value = screen_size
+            self._xvfb = Xvfb(spec.display, screen=f"{screen_size}x24")
             self._xvfb.start()
 
         # 5. Launch Dolphin.
@@ -168,8 +177,35 @@ class DolphinInstance:
         if backend == "xvfb":
             if self.spec.display is None:
                 raise StartupError("xvfb capture backend requires a display number")
-            return XvfbCapture(self.spec.display)
+            return XvfbCapture(self.spec.display, screen_size=self._screen_size(cfg))
         raise StartupError(f"unknown capture backend {backend!r}")
+
+    def _native_size(self, cfg: ServerConfig) -> tuple[int, int]:
+        """The GameCube native framebuffer size as ``(width, height)``."""
+        res = self.spec.native_resolution or cfg.native_resolution
+        return parse_resolution(res)
+
+    def _screen_size(self, cfg: ServerConfig) -> str:
+        """The X display / capture size, sized to fill with the game output.
+
+        The display is sized to the GameCube native resolution scaled by the
+        internal-resolution multiplier, so Dolphin's render window fills the
+        whole screen and no black borders are captured. ``crop`` remains an
+        optional escape hatch for backends that cannot be sized this way.
+        """
+        w, h = self._native_size(cfg)
+        scale = self.spec.internal_resolution or 1
+        return f"{w * scale}x{h * scale}"
+
+    def _resolve_gpu_accel(self, cfg: ServerConfig) -> str:
+        """Resolve the configured GPU-acceleration mode for this instance."""
+        mode = self.spec.gpu_accel or cfg.gpu_accel or "auto"
+        return resolve_gpu_accel(
+            mode,
+            cfg.gpu_device,
+            cfg.vglrun_available(),
+            cfg.vgl_3d_display,
+        )
 
     def _resolve_video_backend(self, cfg: ServerConfig) -> str:
         backend = self.spec.video_backend or cfg.default_video_backend or "OGL"
@@ -177,12 +213,24 @@ class DolphinInstance:
             raise StartupError(f"unknown video backend {backend!r}")
         return backend
 
-    def _launch_dolphin(self, cfg: ServerConfig) -> None:
+    def _build_launch_command(self, cfg: ServerConfig) -> tuple[list[str], dict[str, str]]:
+        """Build the Dolphin argv and env for this instance.
+
+        Returns ``(cmd, env)``. When VirtualGL is used, ``cmd`` is prefixed with
+        ``vglrun -d <device>`` and the env is cleared of software-render forcing.
+        """
         spec = self.spec
         if shutil.which(cfg.dolphin_binary) is None:
             raise StartupError(
                 f"Dolphin binary {cfg.dolphin_binary!r} not found on PATH"
             )
+
+        # Resolve the rendering path (hardware GPU vs software Mesa).
+        try:
+            gpu_mode = self._resolve_gpu_accel(cfg)
+        except ValueError as exc:
+            raise StartupError(str(exc)) from exc
+        self._gpu_mode = gpu_mode
 
         cmd = [cfg.dolphin_binary]
         cmd += [f"--user={spec.user_dir}"]
@@ -193,13 +241,40 @@ class DolphinInstance:
         cmd += self._capture.launch_args()  # type: ignore[union-attr]
         cmd += spec.extra_args
 
-        env = os.environ.copy()
+        env = dict(os.environ)
         if isinstance(self._capture, XvfbCapture) and self._xvfb is not None:
             env["DISPLAY"] = self._xvfb.display_string
-        # Software Mesa if no hardware GPU is present.
-        if not cfg.gpu_available:
+
+        if gpu_mode == "software":
+            # Force Mesa software rendering (llvmpipe) when there's no GPU path.
             env["LIBGL_ALWAYS_SOFTWARE"] = "1"
             env.setdefault("GALLIUM_DRIVER", "llvmpipe")
+        elif gpu_mode == "vgl-egl":
+            # VirtualGL EGL back end: render on the GPU via a DRI device, no 3D X
+            # server needed. vglrun blits the rendered frame onto the Xvfb display.
+            vglrun = shutil.which("vglrun")
+            if vglrun is None or not cfg.gpu_device:
+                raise StartupError(
+                    "gpu_accel resolved to vgl-egl but vglrun/GPU device is missing"
+                )
+            cmd = [vglrun, "-d", cfg.gpu_device] + cmd
+            env.pop("LIBGL_ALWAYS_SOFTWARE", None)
+            env.pop("GALLIUM_DRIVER", None)
+        elif gpu_mode == "vgl-glx":
+            # VirtualGL GLX back end: needs a 3D X server display.
+            vglrun = shutil.which("vglrun")
+            if vglrun is None or not cfg.vgl_3d_display:
+                raise StartupError(
+                    "gpu_accel resolved to vgl-glx but vglrun/3D display is missing"
+                )
+            cmd = [vglrun, "-d", cfg.vgl_3d_display] + cmd
+            env.pop("LIBGL_ALWAYS_SOFTWARE", None)
+            env.pop("GALLIUM_DRIVER", None)
+
+        return cmd, env
+
+    def _launch_dolphin(self, cfg: ServerConfig) -> None:
+        cmd, env = self._build_launch_command(cfg)
 
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._log_path, "wb") as log_fh:
@@ -209,7 +284,7 @@ class DolphinInstance:
                     stdout=log_fh,
                     stderr=subprocess.STDOUT,
                     env=env,
-                    cwd=str(spec.user_dir),
+                    cwd=str(self.spec.user_dir),
                 )
             except OSError as exc:
                 raise StartupError(f"failed to launch Dolphin: {exc}") from exc
@@ -239,6 +314,9 @@ class DolphinInstance:
             "video_backend": self._resolve_video_backend(self.server_config),
             "capture_backend": self.spec.capture_backend,
             "memory_backend": self.spec.memory_backend,
+            "gpu_accel": self._gpu_mode,
+            "screen_size": self._screen_size_value,
+            "native_resolution": self.spec.native_resolution or self.server_config.native_resolution,
             "controller_ready": self._controller_ready(),
             "memory_ready": self._memory_ready(),
             "display": self.spec.display,

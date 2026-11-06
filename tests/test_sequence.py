@@ -6,9 +6,36 @@ import time
 
 import pytest
 
-from gc_mcp.controllers.base import InputStep, SequenceRunner, parse_step
+from gc_mcp.controllers.base import ControllerBackend, InputStep, SequenceRunner, parse_step
 from gc_mcp.controllers.pad_state import PadState
 from gc_mcp.errors import SequenceError
+
+
+class TapBackend(ControllerBackend):
+    """Minimal backend that records press/release for press_once tests."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.pressed: list[tuple[int, str]] = []
+        self.released: list[tuple[int, str]] = []
+
+    def press(self, port: int, button: str) -> None:
+        self.pressed.append((port, button))
+
+    def release(self, port: int, button: str) -> None:
+        self.released.append((port, button))
+
+    def set_stick(self, port: int, stick: str, x: float, y: float) -> None:
+        pass
+
+    def set_trigger(self, port: int, trigger: str, value: float) -> None:
+        pass
+
+    def get_state(self, port: int) -> PadState:
+        return PadState(port=port)
+
+    def reset(self, port: int) -> None:
+        pass
 
 
 class FakeBackend:
@@ -104,3 +131,39 @@ class TestSequenceRunner:
         runner.start()
         assert runner.running is True
         runner.cancel()
+
+
+class TestPressOnce:
+    def test_press_then_release_in_order(self) -> None:
+        backend = TapBackend()
+        backend.press_once(0, "START", hold_duration_ms=10)
+        assert backend.pressed == [(0, "START")]
+        assert backend.released == [(0, "START")]
+
+    def test_default_hold_duration_is_200(self) -> None:
+        import inspect
+
+        sig = inspect.signature(ControllerBackend.press_once)
+        assert sig.parameters["hold_duration_ms"].default == 200.0
+
+    def test_release_even_if_interrupted_during_hold(self, monkeypatch) -> None:
+        backend = TapBackend()
+
+        def boom(_delay: float) -> None:
+            raise KeyboardInterrupt
+
+        # Make time.sleep raise mid-hold; the real implementation's try/finally
+        # must still release the button.
+        monkeypatch.setattr("gc_mcp.controllers.base.time.sleep", boom)
+        with pytest.raises(KeyboardInterrupt):
+            backend.press_once(0, "A", hold_duration_ms=10)
+        assert backend.pressed == [(0, "A")]
+        assert backend.released == [(0, "A")]
+
+    def test_negative_hold_duration_raises(self) -> None:
+        backend = TapBackend()
+        with pytest.raises(ValueError):
+            backend.press_once(0, "A", hold_duration_ms=-1)
+        # No press/release should have been issued.
+        assert backend.pressed == []
+        assert backend.released == []
