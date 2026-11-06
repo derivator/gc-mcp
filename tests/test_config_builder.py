@@ -153,3 +153,21 @@ class TestConfigBuilder:
         assert "Device = XInput2/0/Virtual core pointer" in text
         assert "General/Toggle Pause = F10" in text
         assert "Frame Advance/Frame Advance = F8" in text
+
+    def test_logger_ini_enables_osreport(self, tmp_path) -> None:
+        # A fresh Dolphin --user data directory ships an empty Logger.ini, so
+        # SYS_Report/OSReport output from a ROM never reaches the log file. The
+        # builder must write a Logger.ini that enables OSREPORT (and MASTER) so a
+        # running ROM's console output is observable.
+        cfg = InstanceConfig(user_dir=tmp_path)
+        self._build(cfg)
+        text = (tmp_path / "Config" / "Logger.ini").read_text()
+        assert "[Options]" in text
+        assert "WriteToFile = True" in text
+        assert "WriteToConsole = True" in text
+        assert "WriteToWindow = True" in text
+        assert "Verbosity = 4" in text
+        assert "[Logs]" in text
+        assert "OSREPORT = True" in text
+        assert "OSREPORT_HLE = True" in text
+        assert "MASTER = True" in text

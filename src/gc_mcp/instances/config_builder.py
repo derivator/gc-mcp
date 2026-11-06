@@ -11,6 +11,8 @@ unmodified emulator as a GameCube with the peripherals we want:
 * ``Config/Hotkeys.ini``  - emulator hotkeys (pause, frame-advance, save/load
   state). Written as a *complete* set because Dolphin loads it all-or-nothing.
 * ``Config/GFX.ini``      - video backend / renderer settings.
+* ``Config/Logger.ini``   - enables Dolphin's OSREPORT log so ``SYS_Report``
+  output (e.g. a ROM's debug/console messages) is written to the log file.
 * ``Pipes/``              - the named FIFOs the Pipes backend scans at startup.
 
 The config values are taken directly from Dolphin's own ``ConfigInfo`` /
@@ -160,6 +162,7 @@ class InstanceConfigBuilder:
             self._write_gcpad_new_ini()
             self._write_hotkeys_ini()
             self._write_gfx_ini()
+            self._write_logger_ini()
             cfg.pipes_dir.mkdir(parents=True, exist_ok=True)
             self._create_fifos()
         except ConfigError:
@@ -313,6 +316,35 @@ class InstanceConfigBuilder:
             settings["InternalResolution"] = str(cfg.internal_resolution)
         if settings:
             self._write_ini_file("GFX.ini", {"Settings": settings})
+
+    # ------------------------------------------------------------------
+    # Logger.ini
+    # ------------------------------------------------------------------
+    def _write_logger_ini(self) -> None:
+        """Write a ``Logger.ini`` that enables Dolphin's OSREPORT log.
+
+        Dolphin only forwards a ROM's ``SYS_Report`` / ``OSReport`` calls to the
+        log when the ``OSREPORT`` log type is enabled. A fresh ``--user`` data
+        directory ships an empty (0-byte) ``Logger.ini``, so the ROM's console
+        output never reaches ``Logs/dolphin.log``. We write the file explicitly
+        so that a running ROM's ``OSReport`` output is observable.
+        """
+        self._write_ini_file(
+            "Logger.ini",
+            {
+                "Options": {
+                    "WriteToFile": "True",
+                    "WriteToConsole": "True",
+                    "WriteToWindow": "True",
+                    "Verbosity": "4",
+                },
+                "Logs": {
+                    "OSREPORT": "True",
+                    "OSREPORT_HLE": "True",
+                    "MASTER": "True",
+                },
+            },
+        )
 
     # ------------------------------------------------------------------
     # FIFOs
