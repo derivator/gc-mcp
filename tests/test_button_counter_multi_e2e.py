@@ -2,8 +2,8 @@
 
 Spawns the actual ``gc-mcp`` server binary over stdio, starts TWO instances of
 the button-counter ROM (each with its own Xvfb display and Pipes controller),
-and verifies that controller input and Dolphin hotkeys (pause, save/load) do
-NOT interfere across instances.
+and verifies that controller input and Dolphin hotkeys (pause, frame advance,
+save/load) do NOT interfere across instances.
 
 The button-counter ROM prints ``Controller N: <button> pressed (total N)`` to
 each instance's ``dolphin.log`` via ``SYS_Report``, so we can read each
@@ -17,7 +17,10 @@ What we verify:
      bumps B.
   4. Hotkey (pause) is isolated: pausing A stops A from processing input while
      B keeps running and processing input.
-  5. Hotkey (save/load) is isolated: saving/loading state on A only reverts A's
+  5. Hotkey (frame advance) is isolated: stepping one frame on a paused A
+     advances A's frame (and processes input) without affecting B, which keeps
+     running.
+  6. Hotkey (save/load) is isolated: saving/loading state on A only reverts A's
      counter, leaving B untouched.
 
 Run manually:
@@ -146,6 +149,30 @@ async def _press(session: ClientSession, instance_id: str, log_path: Path,
     return ok
 
 
+async def _step_frame_with_input(session: ClientSession, instance_id: str,
+                                 log_path: Path, target: int) -> bool:
+    """Advance one frame (Frame Advance) on a paused instance and count it.
+
+    The instance must already be paused. We hold A, issue ``gc_emulator_step_frame``,
+    and wait for the counter to reach ``target``. Frame Advance runs the emulated
+    CPU for exactly one frame, so the ROM's controller-poll loop sees the 0 → 1
+    press edge and increments its counter -- proving a frame actually advanced
+    (and that the instance stays paused, i.e. it does not resume running on its
+    own). We then release A and step once more to process the release edge.
+    """
+    await _call(session, "gc_controller_press", {
+        "instance_id": instance_id, "port": 0, "button": "A",
+    })
+    await _call(session, "gc_emulator_step_frame", {"instance_id": instance_id})
+    ok = await _wait_counter(log_path, target)
+    # Release A and process the release edge with a second stepped frame.
+    await _call(session, "gc_controller_release", {
+        "instance_id": instance_id, "port": 0, "button": "A",
+    })
+    await _call(session, "gc_emulator_step_frame", {"instance_id": instance_id})
+    return ok
+
+
 def _check(label: str, ok: bool, detail: str = "") -> bool:
     print(f"[{'PASS' if ok else 'FAIL'}] {label}" + (f" -- {detail}" if detail else ""))
     return ok
@@ -246,30 +273,58 @@ async def main() -> int:
                     f"btn-a={_counter(la)} (expect 2) btn-b={_counter(lb)} (expect 2)",
                 )
 
-                # Check 5: save/load state on A is isolated from B.
+                # Check 5: frame advance (F8) on A is isolated from B.
+                await _call(session, "gc_emulator_toggle_pause", {"instance_id": "btn-a"})
+                await asyncio.sleep(0.6)
+                # While A is paused, step one frame with A held: the ROM's poll
+                # loop sees the 0 -> 1 press edge, so the counter increments --
+                # proving a frame actually advanced (and A stayed paused).
+                ok_step = await _step_frame_with_input(session, "btn-a", la, 3)
+                # A's frame advance must not have paused or advanced B.
+                ok_b_after_step = _counter(lb) == 2
+                # A's frame advance must not have resumed A; B still runs and
+                # processes input.
+                ok_b_runs = await _press(session, "btn-b", lb, 3)
+                all_ok &= _check(
+                    "frame advance on A advances A but not B",
+                    ok_step and ok_b_after_step and ok_b_runs,
+                    f"btn-a={_counter(la)} (expect 3) btn-b={_counter(lb)} (expect 3)",
+                )
+
+                # Resume A; it should process input again.
+                await _call(session, "gc_emulator_toggle_pause", {"instance_id": "btn-a"})
+                await asyncio.sleep(0.6)
+                ok_a = await _press(session, "btn-a", la, 4)
+                all_ok &= _check(
+                    "resume A after frame advance lets A process input",
+                    ok_a and _counter(lb) == 3,
+                    f"btn-a={_counter(la)} (expect 4) btn-b={_counter(lb)} (expect 3)",
+                )
+
+                # Check 6: save/load state on A is isolated from B.
                 await _call(session, "gc_emulator_save_state", {
                     "instance_id": "btn-a", "slot": 1,
                 })
                 await asyncio.sleep(0.8)
-                # Bump A from 2 -> 4.
-                ok1 = await _press(session, "btn-a", la, 3)
-                ok2 = await _press(session, "btn-a", la, 4)
+                # Bump A from 4 -> 6.
+                ok1 = await _press(session, "btn-a", la, 5)
+                ok2 = await _press(session, "btn-a", la, 6)
                 all_ok &= _check(
-                    "A counter advanced to 4 before load",
-                    ok1 and ok2 and _counter(lb) == 2,
-                    f"btn-a={_counter(la)} (expect 4) btn-b={_counter(lb)} (expect 2)",
+                    "A counter advanced to 6 before load",
+                    ok1 and ok2 and _counter(lb) == 3,
+                    f"btn-a={_counter(la)} (expect 6) btn-b={_counter(lb)} (expect 3)",
                 )
-                # Load slot 1 (A reverts to 2), then one more press -> 3.
+                # Load slot 1 (A reverts to 4), then one more press -> 5.
                 await _call(session, "gc_emulator_load_state", {
                     "instance_id": "btn-a", "slot": 1,
                 })
                 await asyncio.sleep(0.8)
-                ok_load = await _press(session, "btn-a", la, 3)
-                reverted = _max_counter(la) == 4 and _counter(la) == 3
+                ok_load = await _press(session, "btn-a", la, 5)
+                reverted = _max_counter(la) == 6 and _counter(la) == 5
                 all_ok &= _check(
-                    "load on A reverts only A (4 -> 2 -> press 3)",
-                    ok_load and reverted and _counter(lb) == 2,
-                    f"btn-a={_counter(la)} (expect 3, max 4) btn-b={_counter(lb)} (expect 2)",
+                    "load on A reverts only A (6 -> 4 -> press 5)",
+                    ok_load and reverted and _counter(lb) == 3,
+                    f"btn-a={_counter(la)} (expect 5, max 6) btn-b={_counter(lb)} (expect 3)",
                 )
 
                 print()
