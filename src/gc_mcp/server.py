@@ -85,7 +85,12 @@ SERVER_INSTRUCTIONS = (
     "gc_emulator_save_state / gc_emulator_load_state (slots 1-8) to checkpoint.\n"
     "- These are driven by Dolphin hotkeys injected via xdotool; they need the "
     "instance's X display and xdotool installed. gc_emulator_freeze / "
-    "gc_emulator_unfreeze are a coarse OS-level pause fallback.\n"
+    "gc_emulator_unfreeze are a coarse OS-level pause fallback.\n\n"
+    "IPL boot:\n"
+    "- gc_instance_start(boot_ipl=True) boots the original GameCube IPL "
+    "(disables 'Skip System Menu'), so the boot logo/menu plays before the "
+    "disc. It only works for a GameCube disc ('.iso'/'.gcm') and only if the "
+    "server has an IPL folder configured (see gc_server_info).\n"
 )
 
 
@@ -125,6 +130,9 @@ def gc_server_info() -> dict:
         "default_bba_mode": config.default_bba_mode,
         "capture_backend": config.capture_backend,
         "memory_backend": config.memory_backend,
+        "ipl_available": config.ipl_available(),
+        "ipl_regions": config.ipl_regions(),
+        "ipl_dir": str(config.ipl_dir) if config.ipl_dir else None,
         "instances": len(manager),
     }
 
@@ -204,6 +212,7 @@ def gc_instance_start(
     native_resolution: str | None = None,
     gpu_accel: str | None = None,
     extra_core: dict[str, str] | None = None,
+    boot_ipl: bool = False,
 ) -> dict:
     """Start a new Dolphin instance booting the given ROM/DOL/ELF.
 
@@ -221,6 +230,12 @@ def gc_instance_start(
         native_resolution: GameCube native framebuffer "WxH" (default 640x480).
         gpu_accel: auto/none/software/vgl/vgl-egl/vgl-glx (default auto).
         extra_core: Extra Dolphin.ini [Core] overrides.
+        boot_ipl: Boot the original GameCube IPL (disable "Skip System Menu"),
+            so the boot logo/menu runs before the disc. Only meaningful for a
+            GameCube disc ('.iso'/'.gcm'); requires the server to be configured
+            with a GC_MCP_IPL_DIR folder containing <REGION>/IPL.bin files
+            (see gc_server_info). Errors if IPL boot is requested but no IPL
+            folder/files are configured.
     """
     return manager.start(
         instance_id,
@@ -235,6 +250,7 @@ def gc_instance_start(
         native_resolution=native_resolution,
         gpu_accel=gpu_accel,
         extra_core=extra_core,
+        boot_ipl=boot_ipl,
     )
 
 

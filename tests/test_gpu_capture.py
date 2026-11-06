@@ -73,6 +73,39 @@ class TestNativeSize:
 
 
 # ---------------------------------------------------------------------------
+# ServerConfig IPL (boot ROM) availability
+# ---------------------------------------------------------------------------
+class TestServerConfigIpl:
+    def test_unconfigured_unavailable(self) -> None:
+        cfg = ServerConfig(ipl_dir=None)
+        assert cfg.ipl_available() is False
+        assert cfg.ipl_regions() == []
+
+    def test_regions_present(self, tmp_path) -> None:
+        for region in ("USA", "JAP", "EUR"):
+            d = tmp_path / region
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "IPL.bin").write_bytes(b"ipl")
+        cfg = ServerConfig(ipl_dir=tmp_path)
+        assert cfg.ipl_available() is True
+        assert sorted(cfg.ipl_regions()) == ["EUR", "JAP", "USA"]
+
+    def test_partial_regions(self, tmp_path) -> None:
+        d = tmp_path / "USA"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "IPL.bin").write_bytes(b"ipl")
+        cfg = ServerConfig(ipl_dir=tmp_path)
+        assert cfg.ipl_regions() == ["USA"]
+
+    def test_missing_files(self, tmp_path) -> None:
+        # A folder that exists but has no IPL files is not "available".
+        (tmp_path / "USA").mkdir(parents=True)
+        cfg = ServerConfig(ipl_dir=tmp_path)
+        assert cfg.ipl_available() is False
+        assert cfg.ipl_regions() == []
+
+
+# ---------------------------------------------------------------------------
 # Instance sizing + launch command
 # ---------------------------------------------------------------------------
 def _make_instance(tmp_path, cfg, **spec_kwargs) -> DolphinInstance:

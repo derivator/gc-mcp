@@ -22,9 +22,11 @@ The config values are taken directly from Dolphin's own ``ConfigInfo`` /
 from __future__ import annotations
 
 import os
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..config import IPL_REGIONS
 from ..errors import ConfigError
 from ..keyboard import DEFAULT_HOTKEYS
 
@@ -131,6 +133,11 @@ class InstanceConfig:
     extra_core: dict[str, str] = field(default_factory=dict)
     #: Extra GCPadNew.ini overrides keyed by ``(port, key)``.
     extra_pad: dict[tuple[int, str], str] = field(default_factory=dict)
+    #: Whether to boot the original GameCube IPL (disable "Skip System Menu").
+    boot_ipl: bool = False
+    #: Folder containing GameCube IPL files (one ``<REGION>/IPL.bin`` per
+    #: region). Required when ``boot_ipl`` is set.
+    ipl_dir: Path | None = None
 
     @property
     def config_dir(self) -> Path:
@@ -158,6 +165,7 @@ class InstanceConfigBuilder:
         cfg = self.cfg
         try:
             cfg.config_dir.mkdir(parents=True, exist_ok=True)
+            self._install_ipl()
             self._write_dolphin_ini()
             self._write_gcpad_new_ini()
             self._write_hotkeys_ini()
@@ -175,7 +183,48 @@ class InstanceConfigBuilder:
             "controller_ports": list(cfg.controller_ports),
             "bba_mode": cfg.bba_mode,
             "pipes_dir": str(cfg.pipes_dir),
+            "boot_ipl": cfg.boot_ipl,
+            "ipl_dir": str(cfg.ipl_dir) if cfg.ipl_dir else None,
         }
+
+    # ------------------------------------------------------------------
+    # GameCube IPL (boot ROM)
+    # ------------------------------------------------------------------
+    def _install_ipl(self) -> None:
+        """Install the GameCube IPL into the instance's ``GC/<region>/`` dir.
+
+        When ``boot_ipl`` is set, copy each available region's ``IPL.bin`` from
+        the configured IPL folder into the per-instance ``GC/<region>/``
+        directory. Dolphin looks for the boot ROM at ``<user_dir>/GC/<region>/``
+        (see ``Config::GetBootROMPath``), so this is what lets "Skip System
+        Menu" (``SkipIPL=False``) actually boot the original GameCube IPL.
+
+        Installing every available region means the boot logo plays regardless
+        of which region the inserted disc is. Raises ``ConfigError`` if IPL boot
+        is requested but the folder is not configured or contains no IPL files.
+        """
+        cfg = self.cfg
+        if not cfg.boot_ipl:
+            return
+        if cfg.ipl_dir is None:
+            raise ConfigError(
+                "IPL boot requested but no IPL folder is configured; set "
+                "GC_MCP_IPL_DIR to a folder containing <REGION>/IPL.bin files"
+            )
+        installed: list[str] = []
+        for region in IPL_REGIONS:
+            src = cfg.ipl_dir / region / "IPL.bin"
+            if not src.is_file():
+                continue
+            dest_dir = cfg.user_dir / "GC" / region
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(src, dest_dir / "IPL.bin")
+            installed.append(region)
+        if not installed:
+            raise ConfigError(
+                f"no GameCube IPL files found under {cfg.ipl_dir}; expected "
+                f"<REGION>/IPL.bin for one of {', '.join(IPL_REGIONS)}"
+            )
 
     # ------------------------------------------------------------------
     # Dolphin.ini ([Core])
@@ -206,6 +255,12 @@ class InstanceConfigBuilder:
                 core["BBA_TAPSERVER_DESTINATION"] = cfg.bba_tapserver_dest
 
         core.update(cfg.extra_core)
+
+        # When booting the original GameCube IPL, stop Dolphin from skipping the
+        # system menu so the boot ROM (and its logo) actually runs. Set after the
+        # extra_core overrides so an explicit boot_ipl request wins.
+        if cfg.boot_ipl:
+            core["SkipIPL"] = "False"
 
         # In headless ``--batch`` mode Dolphin's render window never receives
         # focus, so ``Core::UpdateInputGate()`` closes the input gate. With the

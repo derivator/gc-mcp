@@ -6,6 +6,7 @@ import os
 
 import pytest
 
+from gc_mcp.config import IPL_REGIONS
 from gc_mcp.errors import ConfigError
 from gc_mcp.instances.config_builder import (
     BBA_MODE_EXI,
@@ -171,3 +172,71 @@ class TestConfigBuilder:
         assert "OSREPORT = True" in text
         assert "OSREPORT_HLE = True" in text
         assert "MASTER = True" in text
+
+
+class TestIpl:
+    """Tests for GameCube IPL (boot ROM) installation."""
+
+    def _make_ipl_dir(self, tmp_path, regions: tuple[str, ...] = IPL_REGIONS) -> "os.PathLike":
+        """Create an IPL folder with a small fake ``<REGION>/IPL.bin`` per region."""
+        ipl_dir = tmp_path / "ipl"
+        for region in regions:
+            d = ipl_dir / region
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "IPL.bin").write_bytes(f"fake-{region}-ipl".encode())
+        return ipl_dir
+
+    def test_boot_ipl_installs_and_skips(self, tmp_path) -> None:
+        # boot_ipl=True copies each available region's IPL into GC/<region>/ and
+        # forces [Core] SkipIPL = False so the boot ROM/logo runs.
+        ipl_dir = self._make_ipl_dir(tmp_path)
+        cfg = InstanceConfig(user_dir=tmp_path, boot_ipl=True, ipl_dir=ipl_dir)
+        InstanceConfigBuilder(cfg).write()
+
+        text = (tmp_path / "Config" / "Dolphin.ini").read_text()
+        assert "SkipIPL = False" in text
+        for region in IPL_REGIONS:
+            dest = tmp_path / "GC" / region / "IPL.bin"
+            assert dest.is_file()
+            assert dest.read_bytes() == f"fake-{region}-ipl".encode()
+
+    def test_boot_ipl_all_regions(self, tmp_path) -> None:
+        # Even if only one region's IPL is present, the others are simply skipped
+        # and the installed region(s) still get written.
+        ipl_dir = self._make_ipl_dir(tmp_path, regions=("USA",))
+        cfg = InstanceConfig(user_dir=tmp_path, boot_ipl=True, ipl_dir=ipl_dir)
+        InstanceConfigBuilder(cfg).write()
+
+        assert (tmp_path / "GC" / "USA" / "IPL.bin").is_file()
+        assert not (tmp_path / "GC" / "JAP" / "IPL.bin").exists()
+        assert not (tmp_path / "GC" / "EUR" / "IPL.bin").exists()
+
+    def test_boot_ipl_requires_ipl_dir(self, tmp_path) -> None:
+        # boot_ipl=True with no configured IPL folder must fail loudly.
+        cfg = InstanceConfig(user_dir=tmp_path, boot_ipl=True, ipl_dir=None)
+        with pytest.raises(ConfigError):
+            InstanceConfigBuilder(cfg).write()
+
+    def test_boot_ipl_requires_files(self, tmp_path) -> None:
+        # boot_ipl=True with a folder that has no IPL files must fail.
+        ipl_dir = tmp_path / "ipl"
+        ipl_dir.mkdir()
+        cfg = InstanceConfig(user_dir=tmp_path, boot_ipl=True, ipl_dir=ipl_dir)
+        with pytest.raises(ConfigError):
+            InstanceConfigBuilder(cfg).write()
+
+    def test_boot_ipl_default_does_nothing(self, tmp_path) -> None:
+        # Default (boot_ipl=False) must not write SkipIPL or create GC/ dirs.
+        cfg = InstanceConfig(user_dir=tmp_path)
+        InstanceConfigBuilder(cfg).write()
+
+        text = (tmp_path / "Config" / "Dolphin.ini").read_text()
+        assert "SkipIPL" not in text
+        assert not (tmp_path / "GC").exists()
+
+    def test_result_reports_boot_ipl(self, tmp_path) -> None:
+        ipl_dir = self._make_ipl_dir(tmp_path)
+        cfg = InstanceConfig(user_dir=tmp_path, boot_ipl=True, ipl_dir=ipl_dir)
+        result = InstanceConfigBuilder(cfg).write()
+        assert result["boot_ipl"] is True
+        assert result["ipl_dir"] == str(ipl_dir)

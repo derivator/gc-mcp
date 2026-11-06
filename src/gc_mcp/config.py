@@ -39,6 +39,13 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+#: GameCube IPL regions Dolphin recognises. Each maps to a ``<region>/IPL.bin``
+#: source file under the configured IPL folder and to a ``GC/<region>/``
+#: directory under the per-instance user dir (Dolphin's ``GetBootROMPath``).
+#: ``JAP`` is Dolphin's legacy directory name for the NTSC-J boot ROM.
+IPL_REGIONS = ("USA", "JAP", "EUR")
+
+
 def detect_gpu() -> bool:
     """Return True if a hardware GPU render node is available under /dev/dri."""
     return detect_gpu_device() is not None
@@ -200,6 +207,19 @@ class ServerConfig:
     # Memory
     memory_backend: str = field(default_factory=lambda: _env_str("GC_MCP_MEMORY_BACKEND", "process_vm"))
 
+    # GameCube IPL (boot ROM)
+    #: Folder containing GameCube IPL files, one region subfolder per region
+    #: (each holding an ``IPL.bin``). When set, instances can boot the original
+    #: GameCube IPL (disable "Skip System Menu"); without it the option is
+    #: unavailable. Empty/None disables IPL boot.
+    ipl_dir: Path | None = field(
+        default_factory=lambda: (
+            Path(_env_str("GC_MCP_IPL_DIR", "")).expanduser()
+            if _env_str("GC_MCP_IPL_DIR", "")
+            else None
+        )
+    )
+
     # Timing / robustness
     startup_timeout: float = field(default_factory=lambda: _env_float("GC_MCP_STARTUP_TIMEOUT", 20.0))
     fifo_open_retries: int = field(default_factory=lambda: _env_int("GC_MCP_FIFO_RETRIES", 200))
@@ -216,6 +236,8 @@ class ServerConfig:
         # If the user didn't pin a device, fall back to the auto-detected one.
         if not self.gpu_device:
             self.gpu_device = self.gpu_device_path
+        if self.ipl_dir is not None:
+            self.ipl_dir = Path(self.ipl_dir).expanduser()
 
     # ------------------------------------------------------------------
     # Derived paths
@@ -232,6 +254,16 @@ class ServerConfig:
     def native_size(self) -> tuple[int, int]:
         """The GameCube native framebuffer size as ``(width, height)``."""
         return parse_resolution(self.native_resolution)
+
+    def ipl_regions(self) -> list[str]:
+        """Region names that have an IPL file under ``ipl_dir``."""
+        if self.ipl_dir is None:
+            return []
+        return [r for r in IPL_REGIONS if (self.ipl_dir / r / "IPL.bin").is_file()]
+
+    def ipl_available(self) -> bool:
+        """Whether IPL boot is available (an IPL folder with files is set)."""
+        return bool(self.ipl_regions())
 
     def vglrun_available(self) -> bool:
         return vglrun_available()

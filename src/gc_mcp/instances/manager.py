@@ -72,7 +72,8 @@ class InstanceManager:
               memory_backend: str | None = None, internal_resolution: int | None = None,
               native_resolution: str | None = None, gpu_accel: str | None = None,
               extra_core: dict | None = None, extra_pad: dict | None = None,
-              extra_args: list | None = None, **kwargs) -> dict:
+              extra_args: list | None = None, boot_ipl: bool = False,
+              **kwargs) -> dict:
         """Create and start a new Dolphin instance."""
         instance_id = self._validate_id(instance_id)
         if instance_id in self._instances:
@@ -105,6 +106,7 @@ class InstanceManager:
             extra_core=extra_core or {},
             extra_pad=extra_pad or {},
             extra_args=extra_args or [],
+            boot_ipl=boot_ipl,
         )
 
         instance = DolphinInstance(spec, self.config)

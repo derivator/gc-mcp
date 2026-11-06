@@ -62,6 +62,8 @@ class InstanceSpec:
     extra_pad: dict[tuple[int, str], str] = field(default_factory=dict)
     #: Additional Dolphin CLI args appended verbatim.
     extra_args: list[str] = field(default_factory=list)
+    #: Whether to boot the original GameCube IPL (disable "Skip System Menu").
+    boot_ipl: bool = False
 
 
 class DolphinInstance:
@@ -157,6 +159,8 @@ class DolphinInstance:
             internal_resolution=spec.internal_resolution,
             extra_core=spec.extra_core,
             extra_pad=spec.extra_pad,
+            boot_ipl=spec.boot_ipl,
+            ipl_dir=cfg.ipl_dir,
         )
         InstanceConfigBuilder(instance_cfg).write()
 
