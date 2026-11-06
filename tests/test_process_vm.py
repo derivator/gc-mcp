@@ -12,6 +12,7 @@ from gc_mcp.memory.process_vm import (
     MEM1_START,
     MEM2_START,
     ProcessVMMemory,
+    _parse_maps_lines,
 )
 
 
@@ -75,5 +76,71 @@ class TestOffsetToHost:
         with pytest.raises(MemoryError):
             m._offset_to_host(offset)
 
+    def test_mem1_maps_into_mem1_without_aram(self) -> None:
+        # Regression: when ARAM is not separately mapped, a MEM1 offset must
+        # still land in MEM1. The old fallback re-added ARAM_FAKESIZE and read
+        # 32 MB past the base (returning zeros).
+        m = self._make(aram_accessible=False)
+        offset = ProcessVMMemory.dolphin_addr_to_offset(MEM1_START + 0x1000)
+        assert m._offset_to_host(offset) == 0x700000000000 + 0x1000
+
+    def test_aram_missing_raises(self) -> None:
+        # Without a detectable ARAM region there is no host mapping for ARAM.
+        m = self._make(aram_accessible=False)
+        offset = ProcessVMMemory.dolphin_addr_to_offset(ARAM_START)
+        with pytest.raises(MemoryError):
+            m._offset_to_host(offset)
+
     def test_mem1_size_constant(self) -> None:
         assert MEM1_SIZE == 0x1800000
+
+
+class TestParseMapsLines:
+    def _line(self, start, end, offset, name="dolphin-emu.1234") -> str:
+        return (
+            f"{start:x}-{end:x} rw-s {offset:08x} 00:98 19 "
+            f"/dev/shm/{name} (deleted)"
+        )
+
+    def test_mem1_and_aram_gamecube(self) -> None:
+        # A GameCube-style layout: MEM1 at offset 0, ARAM at an offset with bit
+        # 0x40000 set (the real Dolphin offset is 0x4040000).
+        lines = [
+            self._line(0x7f00000000, 0x7f04000000, 0x00000000),
+            self._line(0x7f10000000, 0x7f12000000, 0x04040000),
+        ]
+        regions = _parse_maps_lines(lines)
+        assert regions["mem1"] == 0x7F00000000
+        assert regions["aram_accessible"] is True
+        assert regions["aram"] == 0x7F10000000
+        assert regions["mem2_present"] is False
+
+    def test_mem2_wii(self) -> None:
+        # A Wii-style layout: MEM2 is a 64 MB region at an offset with bit
+        # 0x40000 set.
+        lines = [
+            self._line(0x7f00000000, 0x7f04000000, 0x00000000),
+            self._line(0x7f10000000, 0x7f14000000, 0x04040000),
+        ]
+        regions = _parse_maps_lines(lines)
+        assert regions["mem1"] == 0x7F00000000
+        assert regions["mem2_present"] is True
+        assert regions["mem2"] == 0x7F10000000
+        assert regions["aram_accessible"] is False
+
+    def test_aram_not_detected_without_flag(self) -> None:
+        # A region whose offset lacks the 0x40000 bit is not ARAM/MEM2.
+        lines = [
+            self._line(0x7f00000000, 0x7f04000000, 0x00000000),
+            self._line(0x7f10000000, 0x7f12000000, 0x04000000),
+        ]
+        regions = _parse_maps_lines(lines)
+        assert regions["mem1"] == 0x7F00000000
+        assert regions["aram_accessible"] is False
+        assert regions["mem2_present"] is False
+
+    def test_ignores_non_dolphin_lines(self) -> None:
+        lines = ["/usr/bin/dolphin-emu r-xp 00000000 00:56 3829039"]
+        regions = _parse_maps_lines(lines)
+        assert regions["mem1"] == 0
+        assert regions["aram_accessible"] is False

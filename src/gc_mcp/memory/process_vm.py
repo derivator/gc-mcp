@@ -42,8 +42,12 @@ ARAM_FAKESIZE = 0x2000000  # 32 MB "fake" vMem used for the speedhack region
 #: File-path prefixes Dolphin uses for its shared memory mappings.
 _DOLPHIN_SHM_PREFIXES = ("/dev/shm/dolphinmem", "/dev/shm/dolphin-emu")
 
-# The shared memory layout offset where ARAM / MEM2 begin (after a 0x40000 gap).
-_ARAM_OFFSET = MEM1_SIZE + 0x40000
+#: Dolphin places ARAM / MEM2 in the shared-memory file at an offset that always
+#: has bit 0x40000 set (right after the main-RAM region and its 0x40000 mirror
+#: gap). This is how dolphin-memory-engine's LinuxDolphinProcess detects the
+#: region, and it is far more robust than a hard-coded offset, which changes
+#: between Dolphin versions.
+_ARAM_OFFSET_FLAG = 0x00040000
 
 
 class _IOVec(ctypes.Structure):
@@ -94,6 +98,23 @@ def _parse_maps(pid: int) -> dict:
     except OSError as exc:
         raise MemoryError(f"could not read {maps_path}: {exc}") from exc
 
+    return _parse_maps_lines(lines)
+
+
+def _parse_maps_lines(lines: list[str]) -> dict:
+    """Parse ``/proc/<pid>/maps`` lines into Dolphin shared-memory regions.
+
+    Returns a dict with the host start addresses of MEM1, ARAM and MEM2 (0 if
+    absent) plus whether ARAM is accessible.
+    """
+    result = {
+        "mem1": 0,
+        "aram": 0,
+        "mem2": 0,
+        "mem2_present": False,
+        "aram_accessible": False,
+    }
+
     for line in lines:
         tokens = line.split()
         if len(tokens) < 3:
@@ -114,8 +135,10 @@ def _parse_maps(pid: int) -> dict:
         # MEM1: at offset 0, sized at least the 24 MB main RAM.
         if offset == 0 and region_size >= MEM1_SIZE:
             result["mem1"] = start
-        # ARAM / MEM2: at the offset after the 0x40000 gap.
-        elif offset == _ARAM_OFFSET:
+        # ARAM / MEM2: Dolphin maps these after the main-RAM region and its
+        # mirror gap; the file offset always has bit 0x40000 set. Distinguish
+        # ARAM (GameCube, 16 MB) from MEM2 (Wii, 64 MB) by the region size.
+        elif (offset & _ARAM_OFFSET_FLAG) == _ARAM_OFFSET_FLAG:
             if region_size >= MEM2_SIZE:
                 result["mem2"] = start
                 result["mem2_present"] = True
@@ -173,15 +196,22 @@ class ProcessVMMemory(MemoryBackend):
 
     def _offset_to_host(self, offset: int) -> int:
         regions = self._ensure_regions()
-        if regions["aram_accessible"]:
-            if offset >= ARAM_FAKESIZE:
-                return regions["mem1"] + offset - ARAM_FAKESIZE
-            return regions["aram"] + offset
+        # MEM2 (Wii-only) occupies the highest fake offsets.
         if offset >= (MEM2_START - MEM1_START):
             if not regions["mem2_present"]:
                 raise MemoryError("this GameCube has no MEM2 (Wii-only region)")
             return regions["mem2"] + offset - (MEM2_START - MEM1_START)
-        return regions["mem1"] + offset
+        # MEM1 occupies fake offsets [ARAM_FAKESIZE, MEM2_START - MEM1_START).
+        # ``dolphin_addr_to_offset`` shifts MEM1 by ARAM_FAKESIZE, so undo that
+        # here. This must hold even when ARAM is not separately mapped (the
+        # previous fallback added the shift again, reading 32 MB past MEM1).
+        if offset >= ARAM_FAKESIZE:
+            return regions["mem1"] + offset - ARAM_FAKESIZE
+        # ARAM occupies fake offsets [0, ARAM_FAKESIZE).
+        if regions["aram_accessible"]:
+            return regions["aram"] + offset
+        # Without a detectable ARAM region there is no host mapping for it.
+        raise MemoryError("ARAM is not accessible in this emulator")
 
     # ------------------------------------------------------------------
     # Read / write
