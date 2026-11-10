@@ -153,7 +153,7 @@ async def _step_frame_with_input(session: ClientSession, instance_id: str,
                                  log_path: Path, target: int) -> bool:
     """Advance one frame (Frame Advance) on a paused instance and count it.
 
-    The instance must already be paused. We hold A, issue ``gc_emulator_step_frame``,
+    The instance must already be paused. We hold A, issue ``gc_dolphin_step_frame``,
     and wait for the counter to reach ``target``. Frame Advance runs the emulated
     CPU for exactly one frame, so the ROM's controller-poll loop sees the 0 → 1
     press edge and increments its counter -- proving a frame actually advanced
@@ -163,13 +163,13 @@ async def _step_frame_with_input(session: ClientSession, instance_id: str,
     await _call(session, "gc_controller_press", {
         "instance_id": instance_id, "port": 0, "button": "A",
     })
-    await _call(session, "gc_emulator_step_frame", {"instance_id": instance_id})
+    await _call(session, "gc_dolphin_step_frame", {"instance_id": instance_id})
     ok = await _wait_counter(log_path, target)
     # Release A and process the release edge with a second stepped frame.
     await _call(session, "gc_controller_release", {
         "instance_id": instance_id, "port": 0, "button": "A",
     })
-    await _call(session, "gc_emulator_step_frame", {"instance_id": instance_id})
+    await _call(session, "gc_dolphin_step_frame", {"instance_id": instance_id})
     return ok
 
 
@@ -247,7 +247,7 @@ async def main() -> int:
                 )
 
                 # Check 4: pause A (F10) must NOT pause B.
-                await _call(session, "gc_emulator_toggle_pause", {"instance_id": "btn-a"})
+                await _call(session, "gc_dolphin_toggle_pause", {"instance_id": "btn-a"})
                 await asyncio.sleep(0.6)
                 # While A is paused, pressing A on A should NOT register.
                 await _call(session, "gc_controller_press_once", {
@@ -264,7 +264,7 @@ async def main() -> int:
                 )
 
                 # Resume A; it should process input again.
-                await _call(session, "gc_emulator_toggle_pause", {"instance_id": "btn-a"})
+                await _call(session, "gc_dolphin_toggle_pause", {"instance_id": "btn-a"})
                 await asyncio.sleep(0.6)
                 ok_a = await _press(session, "btn-a", la, 2)
                 all_ok &= _check(
@@ -274,7 +274,7 @@ async def main() -> int:
                 )
 
                 # Check 5: frame advance (F8) on A is isolated from B.
-                await _call(session, "gc_emulator_toggle_pause", {"instance_id": "btn-a"})
+                await _call(session, "gc_dolphin_toggle_pause", {"instance_id": "btn-a"})
                 await asyncio.sleep(0.6)
                 # While A is paused, step one frame with A held: the ROM's poll
                 # loop sees the 0 -> 1 press edge, so the counter increments --
@@ -292,7 +292,7 @@ async def main() -> int:
                 )
 
                 # Resume A; it should process input again.
-                await _call(session, "gc_emulator_toggle_pause", {"instance_id": "btn-a"})
+                await _call(session, "gc_dolphin_toggle_pause", {"instance_id": "btn-a"})
                 await asyncio.sleep(0.6)
                 ok_a = await _press(session, "btn-a", la, 4)
                 all_ok &= _check(
@@ -302,7 +302,7 @@ async def main() -> int:
                 )
 
                 # Check 6: save/load state on A is isolated from B.
-                await _call(session, "gc_emulator_save_state", {
+                await _call(session, "gc_dolphin_save_state", {
                     "instance_id": "btn-a", "slot": 1,
                 })
                 await asyncio.sleep(0.8)
@@ -315,7 +315,7 @@ async def main() -> int:
                     f"btn-a={_counter(la)} (expect 6) btn-b={_counter(lb)} (expect 3)",
                 )
                 # Load slot 1 (A reverts to 4), then one more press -> 5.
-                await _call(session, "gc_emulator_load_state", {
+                await _call(session, "gc_dolphin_load_state", {
                     "instance_id": "btn-a", "slot": 1,
                 })
                 await asyncio.sleep(0.8)

@@ -48,6 +48,32 @@ class FakeBackend:
         self.applied.append(step)
 
 
+class StickBackend(ControllerBackend):
+    """Minimal backend that records set_stick calls for stick_flick tests."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.sticks: list[tuple[int, str, float, float]] = []
+
+    def press(self, port: int, button: str) -> None:
+        pass
+
+    def release(self, port: int, button: str) -> None:
+        pass
+
+    def set_stick(self, port: int, stick: str, x: float, y: float) -> None:
+        self.sticks.append((port, stick, x, y))
+
+    def set_trigger(self, port: int, trigger: str, value: float) -> None:
+        pass
+
+    def get_state(self, port: int) -> PadState:
+        return PadState(port=port)
+
+    def reset(self, port: int) -> None:
+        pass
+
+
 class TestParseStep:
     def test_press(self) -> None:
         step = parse_step({"t": 100, "type": "press", "button": "a"})
@@ -167,3 +193,36 @@ class TestPressOnce:
         # No press/release should have been issued.
         assert backend.pressed == []
         assert backend.released == []
+
+
+class TestStickFlick:
+    def test_push_then_center_in_order(self) -> None:
+        backend = StickBackend()
+        backend.stick_flick(0, "main", 0.0, 1.0, hold_duration_ms=10)
+        assert backend.sticks == [(0, "main", 0.0, 1.0), (0, "main", 0.0, 0.0)]
+
+    def test_default_hold_duration_is_200(self) -> None:
+        import inspect
+
+        sig = inspect.signature(ControllerBackend.stick_flick)
+        assert sig.parameters["hold_duration_ms"].default == 200.0
+
+    def test_center_even_if_interrupted_during_hold(self, monkeypatch) -> None:
+        backend = StickBackend()
+
+        def boom(_delay: float) -> None:
+            raise KeyboardInterrupt
+
+        # Make time.sleep raise mid-hold; the real implementation's try/finally
+        # must still return the stick to centre.
+        monkeypatch.setattr("gc_mcp.controllers.base.time.sleep", boom)
+        with pytest.raises(KeyboardInterrupt):
+            backend.stick_flick(0, "c", 1.0, -1.0, hold_duration_ms=10)
+        assert backend.sticks == [(0, "c", 1.0, -1.0), (0, "c", 0.0, 0.0)]
+
+    def test_negative_hold_duration_raises(self) -> None:
+        backend = StickBackend()
+        with pytest.raises(ValueError):
+            backend.stick_flick(0, "main", 1.0, 0.0, hold_duration_ms=-1)
+        # No stick move should have been issued.
+        assert backend.sticks == []

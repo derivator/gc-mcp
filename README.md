@@ -9,7 +9,7 @@ manipulates all four GameCube controller ports.
 The tool surface is designed around a **unified `gc_` interface** that works on
 both the emulator and (eventually) real hardware. Anything that can only ever
 apply to the emulator (e.g. changing Dolphin's own configuration) is exposed
-under a `dolphin_` prefix.
+under a `gc_dolphin_` prefix.
 
 ## Why
 
@@ -121,5 +121,5 @@ All tools take an `instance_id` where relevant.
 - `gc_capture_backends`, `gc_capture_configure`, `gc_capture_screenshot`
 - `gc_controller_press`, `gc_controller_release`, `gc_controller_set_stick`, `gc_controller_set_trigger`, `gc_controller_sequence`, `gc_controller_sequence_cancel`, `gc_controller_get_state`, `gc_controller_reset`
 - `gc_memory_read`, `gc_memory_write`
-- `dolphin_config_get`, `dolphin_config_set`, `dolphin_config_apply_profile`
+- `gc_dolphin_config_get`, `gc_dolphin_config_set`, `gc_dolphin_config_apply_profile`
 - `gc_server_info`, `gc_gpu_info`

@@ -47,6 +47,10 @@ class DolphinPlatform(Platform):
     def controller_set_trigger(self, port: int, trigger: str, value: float) -> None:
         self.instance.controller.set_trigger(port, trigger, value)
 
+    def controller_flick(self, port: int, stick: str, x: float, y: float,
+                         hold_duration: float = 200.0) -> None:
+        self.instance.controller.stick_flick(port, stick, x, y, hold_duration)
+
     def controller_sequence(self, port: int, steps: list[dict], loop: bool = False) -> dict:
         return self.instance.controller.sequence(port, steps, loop=loop)
 
@@ -58,6 +62,12 @@ class DolphinPlatform(Platform):
 
     def controller_reset(self, port: int) -> None:
         self.instance.controller.reset(port)
+
+    # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+    def read_log(self, tail: int | None = None, grep: str | None = None) -> dict:
+        return self.instance.read_log(tail=tail, grep=grep)
 
     # ------------------------------------------------------------------
     # Capture
@@ -83,8 +93,8 @@ class DolphinPlatform(Platform):
     def emulator_step_frame(self) -> dict:
         return self.instance.emulator_step_frame()
 
-    def emulator_save_state(self, slot: int) -> dict:
-        return self.instance.emulator_save_state(slot)
+    def emulator_save_state(self, slot: int, copy_dir: Path | None = None) -> dict:
+        return self.instance.emulator_save_state(slot, copy_dir)
 
     def emulator_load_state(self, slot: int) -> dict:
         return self.instance.emulator_load_state(slot)

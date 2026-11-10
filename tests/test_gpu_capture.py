@@ -106,6 +106,22 @@ class TestServerConfigIpl:
 
 
 # ---------------------------------------------------------------------------
+# ServerConfig derived directories (states_dir / ensure_dirs)
+# ---------------------------------------------------------------------------
+class TestServerConfigDirs:
+    def test_states_dir_under_base(self, tmp_path) -> None:
+        cfg = ServerConfig(base_dir=tmp_path / "data")
+        assert cfg.states_dir == tmp_path / "data" / "states"
+
+    def test_ensure_dirs_creates_states(self, tmp_path) -> None:
+        cfg = ServerConfig(base_dir=tmp_path / "data")
+        cfg.ensure_dirs()
+        assert (tmp_path / "data" / "states").is_dir()
+        assert (tmp_path / "data" / "instances").is_dir()
+        assert (tmp_path / "data" / "captures").is_dir()
+
+
+# ---------------------------------------------------------------------------
 # Instance sizing + launch command
 # ---------------------------------------------------------------------------
 def _make_instance(tmp_path, cfg, **spec_kwargs) -> DolphinInstance:

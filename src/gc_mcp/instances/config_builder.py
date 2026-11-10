@@ -352,7 +352,7 @@ class InstanceConfigBuilder:
         Dolphin loads ``Hotkeys.ini`` all-or-nothing: if the file exists, any
         control not listed is left *unbound*. We therefore write the full default
         binding set (pause, save/load state, etc.) plus a Frame Advance binding,
-        so ``gc_emulator_step_frame`` works out of the box.
+        so ``gc_dolphin_step_frame`` works out of the box.
         """
         from ..keyboard import build_hotkey_ini
 

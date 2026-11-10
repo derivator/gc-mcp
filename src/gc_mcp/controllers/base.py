@@ -196,6 +196,27 @@ class ControllerBackend(ABC):
         finally:
             self.release(port, button)
 
+    def stick_flick(self, port: int, stick: str, x: float, y: float,
+                    hold_duration_ms: float = 200.0) -> None:
+        """Push the analog stick to ``(x, y)``, hold it, then return to centre.
+
+        This is the analog counterpart to :meth:`press_once`: a single atomic
+        action used to *flick* the stick for menu navigation. It pushes the
+        stick to the given direction, holds it for ``hold_duration_ms``, then
+        returns it to ``(0, 0)`` (centre). The stick is always returned to centre
+        even if an error occurs.
+
+        ``x``/``y`` are in the API's -1..1 range (0,0 = centre). ``stick`` is
+        ``'main'`` or ``'c'``. ``hold_duration_ms`` defaults to 200 ms.
+        """
+        if hold_duration_ms < 0:
+            raise ValueError("hold_duration_ms must be >= 0")
+        self.set_stick(port, stick, x, y)
+        try:
+            time.sleep(hold_duration_ms / 1000.0)
+        finally:
+            self.set_stick(port, stick, 0.0, 0.0)
+
     # ------------------------------------------------------------------
     # Sequence API
     # ------------------------------------------------------------------

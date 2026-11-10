@@ -381,6 +381,50 @@ class DolphinInstance:
         return self.status()
 
     # ------------------------------------------------------------------
+    # Logging
+    # ------------------------------------------------------------------
+    def read_log(self, tail: int | None = None, grep: str | None = None) -> dict:
+        """Read this instance's Dolphin log file (``<user_dir>/dolphin.log``).
+
+        ``grep`` filters the lines to those containing the (case-insensitive)
+        substring. ``tail`` returns only the last ``tail`` lines of the (possibly
+        filtered) output. Returns the matching lines and some metadata.
+        """
+        path = self._log_path
+        if not path.exists():
+            return {
+                "instance_id": self.spec.instance_id,
+                "path": str(path),
+                "exists": False,
+                "total_lines": 0,
+                "tail": tail,
+                "grep": grep,
+                "returned_lines": 0,
+                "lines": [],
+            }
+
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        total = len(lines)
+
+        if grep:
+            needle = grep.lower()
+            lines = [ln for ln in lines if needle in ln.lower()]
+        if tail is not None and tail >= 0:
+            lines = lines[-tail:]
+
+        return {
+            "instance_id": self.spec.instance_id,
+            "path": str(path),
+            "exists": True,
+            "total_lines": total,
+            "tail": tail,
+            "grep": grep,
+            "returned_lines": len(lines),
+            "lines": lines,
+        }
+
+    # ------------------------------------------------------------------
     # Shutdown
     # ------------------------------------------------------------------
     def stop(self, timeout: float = 5.0) -> dict:
@@ -424,9 +468,54 @@ class DolphinInstance:
         """Advance exactly one frame via the Frame Advance hotkey."""
         return self.keyboard.step_frame().to_dict()
 
-    def emulator_save_state(self, slot: int) -> dict:
-        """Save a state to ``slot`` via Shift+F{slot}."""
-        return self.keyboard.save_state(slot).to_dict()
+    def emulator_save_state(self, slot: int, copy_dir: Path | None = None) -> dict:
+        """Save a state to ``slot`` via Shift+F{slot}, then copy it.
+
+        After triggering the save hotkey this waits for Dolphin to write the
+        state file (``<user_dir>/StateSaves/*.s{slot}``) and copies it into
+        ``copy_dir`` (or ``server_config.states_dir``). The returned dict is the
+        keyboard result augmented with the copy outcome.
+        """
+        result = self.keyboard.save_state(slot).to_dict()
+        if not result.get("ok"):
+            return result
+
+        state_file = self._wait_for_state_file(slot)
+        if state_file is None:
+            result["copied"] = False
+            result["state_file"] = None
+            result["copied_to"] = None
+            result["error"] = result.get("error") or (
+                f"save state for slot {slot} did not appear under StateSaves/"
+            )
+            return result
+
+        dest_dir = Path(copy_dir) if copy_dir is not None else self.server_config.states_dir
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / state_file.name
+        shutil.copy2(state_file, dest)
+        result["copied"] = True
+        result["state_file"] = str(state_file)
+        result["copied_to"] = str(dest)
+        return result
+
+    def _wait_for_state_file(self, slot: int, timeout: float = 5.0) -> Path | None:
+        """Wait for Dolphin to write the ``StateSaves/*.s{slot}`` file.
+
+        Dolphin names save-state files ``<gameid>.s<slot>`` (slot zero-padded to
+        two digits) under ``<user_dir>/StateSaves/``. We glob for the matching
+        suffix so we don't need to know the disc's game ID. Returns the newest
+        matching file, or ``None`` if none appears within ``timeout`` seconds.
+        """
+        saves_dir = self.spec.user_dir / "StateSaves"
+        pattern = f"*.s{slot:02d}"
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            matches = list(saves_dir.glob(pattern))
+            if matches:
+                return max(matches, key=lambda p: p.stat().st_mtime)
+            time.sleep(0.1)
+        return None
 
     def emulator_load_state(self, slot: int) -> dict:
         """Load a state from ``slot`` via F{slot}."""

@@ -251,6 +251,11 @@ class ServerConfig:
         return self.base_dir / "captures"
 
     @property
+    def states_dir(self) -> Path:
+        """Directory where ``gc_dolphin_save_state`` copies each save-state file."""
+        return self.base_dir / "states"
+
+    @property
     def native_size(self) -> tuple[int, int]:
         """The GameCube native framebuffer size as ``(width, height)``."""
         return parse_resolution(self.native_resolution)
@@ -278,7 +283,7 @@ class ServerConfig:
         )
 
     def ensure_dirs(self) -> None:
-        for d in (self.instances_dir, self.captures_dir):
+        for d in (self.instances_dir, self.captures_dir, self.states_dir):
             d.mkdir(parents=True, exist_ok=True)
 
     def resolve_capture_backend(self) -> str:

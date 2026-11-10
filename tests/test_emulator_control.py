@@ -201,7 +201,7 @@ class TestHotkeysIniRoundTrip:
 # MCP tool layer (monkeypatch server._instance)
 # ---------------------------------------------------------------------------
 class FakeEmulatorPlatform:
-    """A minimal stand-in for DolphinPlatform with emulator_* methods."""
+    """A minimal stand-in for DolphinPlatform with emulator_*/read_log methods."""
 
     def __init__(self, results: dict | None = None) -> None:
         self.calls: list[tuple] = []
@@ -215,9 +215,9 @@ class FakeEmulatorPlatform:
         self.calls.append(("step_frame",))
         return {"ok": True, "action": "step_frame"}
 
-    def emulator_save_state(self, slot: int):
-        self.calls.append(("save_state", slot))
-        return {"ok": True, "action": "save_state", "slot": slot}
+    def emulator_save_state(self, slot: int, copy_dir=None):
+        self.calls.append(("save_state", slot, copy_dir))
+        return {"ok": True, "action": "save_state", "slot": slot, "copied": True}
 
     def emulator_load_state(self, slot: int):
         self.calls.append(("load_state", slot))
@@ -231,6 +231,12 @@ class FakeEmulatorPlatform:
         self.calls.append(("unfreeze",))
         return {"ok": True, "state": "running"}
 
+    def read_log(self, tail=None, grep=None):
+        self.calls.append(("read_log", tail, grep))
+        return {"instance_id": "inst", "path": "/tmp/dolphin.log", "exists": True,
+                "total_lines": 3, "tail": tail, "grep": grep, "returned_lines": 3,
+                "lines": ["line1", "line2", "line3"]}
+
 
 @pytest.fixture
 def platform(monkeypatch):
@@ -241,50 +247,100 @@ def platform(monkeypatch):
 
 class TestEmulatorTools:
     def test_toggle_pause(self, platform):
-        res = server.gc_emulator_toggle_pause("inst")
+        res = server.gc_dolphin_toggle_pause("inst")
         assert res["ok"] is True
         assert platform.calls == [("toggle_pause",)]
 
     def test_step_frame(self, platform):
-        res = server.gc_emulator_step_frame("inst")
+        res = server.gc_dolphin_step_frame("inst")
         assert res["ok"] is True
         assert platform.calls == [("step_frame",)]
 
     def test_save_state(self, platform):
-        res = server.gc_emulator_save_state("inst", 2)
+        res = server.gc_dolphin_save_state("inst", 2)
         assert res["slot"] == 2
-        assert platform.calls == [("save_state", 2)]
+        assert res["copied"] is True
+        assert platform.calls == [("save_state", 2, None)]
+
+    def test_save_state_with_copy_dir(self, platform):
+        res = server.gc_dolphin_save_state("inst", 2, copy_dir="/tmp/states")
+        assert res["slot"] == 2
+        assert platform.calls == [("save_state", 2, Path("/tmp/states"))]
+
+    def test_log(self, platform):
+        res = server.gc_log("inst")
+        assert res["exists"] is True
+        assert res["lines"] == ["line1", "line2", "line3"]
+        assert platform.calls == [("read_log", None, None)]
+
+    def test_log_with_tail_and_grep(self, platform):
+        res = server.gc_log("inst", tail=10, grep="error")
+        assert res["tail"] == 10
+        assert res["grep"] == "error"
+        assert platform.calls == [("read_log", 10, "error")]
 
     def test_load_state(self, platform):
-        res = server.gc_emulator_load_state("inst", 7)
+        res = server.gc_dolphin_load_state("inst", 7)
         assert res["slot"] == 7
         assert platform.calls == [("load_state", 7)]
 
     def test_save_state_slot_out_of_range(self, platform):
-        res = server.gc_emulator_save_state("inst", 9)
+        res = server.gc_dolphin_save_state("inst", 9)
         assert res["ok"] is False
         assert "slot must be 1-8" in res["error"]
         assert platform.calls == []
 
     def test_load_state_slot_out_of_range(self, platform):
-        res = server.gc_emulator_load_state("inst", 0)
+        res = server.gc_dolphin_load_state("inst", 0)
         assert res["ok"] is False
         assert "slot must be 1-8" in res["error"]
         assert platform.calls == []
 
     def test_freeze(self, platform):
-        res = server.gc_emulator_freeze("inst")
+        res = server.gc_dolphin_freeze("inst")
         assert res["state"] == "frozen"
         assert platform.calls == [("freeze",)]
 
     def test_unfreeze(self, platform):
-        res = server.gc_emulator_unfreeze("inst")
+        res = server.gc_dolphin_unfreeze("inst")
         assert res["state"] == "running"
         assert platform.calls == [("unfreeze",)]
 
 
 # ---------------------------------------------------------------------------
-# dolphin_hotkey_get / dolphin_hotkey_set (monkeypatch server._instance)
+# gc_controller_flick (monkeypatch server._instance)
+# ---------------------------------------------------------------------------
+class FakeControllerPlatform:
+    """A minimal stand-in for DolphinPlatform with controller_flick."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def controller_flick(self, port: int, stick: str, x: float, y: float,
+                         hold_duration: float = 200.0):
+        self.calls.append((port, stick, x, y, hold_duration))
+
+
+@pytest.fixture
+def controller_platform(monkeypatch):
+    fake = FakeControllerPlatform()
+    monkeypatch.setattr(server, "_instance", lambda instance_id: fake)
+    return fake
+
+
+class TestControllerFlick:
+    def test_flick(self, controller_platform):
+        res = server.gc_controller_flick("inst", 0, "main", 0.0, 1.0)
+        assert res["state"] == "centered"
+        assert controller_platform.calls == [(0, "main", 0.0, 1.0, 200.0)]
+
+    def test_flick_custom_hold(self, controller_platform):
+        server.gc_controller_flick("inst", 1, "c", -1.0, 0.5, hold_duration=500.0)
+        assert controller_platform.calls == [(1, "c", -1.0, 0.5, 500.0)]
+
+
+# ---------------------------------------------------------------------------
+# gc_dolphin_hotkey_get / gc_dolphin_hotkey_set (monkeypatch server._instance)
 # ---------------------------------------------------------------------------
 class FakeHotkeyPlatform:
     """A stand-in for DolphinPlatform with an instance.spec.user_dir."""
@@ -305,7 +361,7 @@ class TestDolphinHotkeyTools:
         return tmp_path / "Config" / "Hotkeys.ini"
 
     def test_get_returns_default_when_no_file(self, hotkey_platform):
-        res = server.dolphin_hotkey_get("inst", "General/Toggle Pause")
+        res = server.gc_dolphin_hotkey_get("inst", "General/Toggle Pause")
         assert res["binding"] == "F10"
         assert res["bound"] is True
 
@@ -314,12 +370,12 @@ class TestDolphinHotkeyTools:
         from gc_mcp.keyboard import write_hotkeys_ini
 
         write_hotkeys_ini(self._hotkeys(tmp_path), {"Frame Advance/Frame Advance": "F8"})
-        res = server.dolphin_hotkey_get("inst", "General/Toggle Pause")
+        res = server.gc_dolphin_hotkey_get("inst", "General/Toggle Pause")
         assert res["bound"] is False
         assert res["binding"] is None
 
     def test_set_writes_complete_file(self, hotkey_platform, tmp_path):
-        server.dolphin_hotkey_set("inst", "Frame Advance/Frame Advance", "F8")
+        server.gc_dolphin_hotkey_set("inst", "Frame Advance/Frame Advance", "F8")
         path = self._hotkeys(tmp_path)
         assert path.exists()
         values = read_hotkeys_ini(path)
@@ -330,12 +386,12 @@ class TestDolphinHotkeyTools:
         from gc_mcp.keyboard import write_hotkeys_ini
 
         write_hotkeys_ini(self._hotkeys(tmp_path), {"General/Toggle Pause": "F10"})
-        server.dolphin_hotkey_set("inst", "General/Toggle Pause", "F11")
+        server.gc_dolphin_hotkey_set("inst", "General/Toggle Pause", "F11")
         values = read_hotkeys_ini(self._hotkeys(tmp_path))
         assert values["General/Toggle Pause"] == "F11"
 
     def test_set_empty_unbinds(self, hotkey_platform, tmp_path):
-        server.dolphin_hotkey_set("inst", "Frame Advance/Frame Advance", "")
+        server.gc_dolphin_hotkey_set("inst", "Frame Advance/Frame Advance", "")
         values = read_hotkeys_ini(self._hotkeys(tmp_path))
         assert "Frame Advance/Frame Advance" not in values
 
@@ -355,5 +411,5 @@ class TestServerInstructions:
         assert ">" in server.SERVER_INSTRUCTIONS
 
     def test_instructions_cover_emulator_control(self):
-        assert "gc_emulator_toggle_pause" in server.SERVER_INSTRUCTIONS
-        assert "gc_emulator_step_frame" in server.SERVER_INSTRUCTIONS
+        assert "gc_dolphin_toggle_pause" in server.SERVER_INSTRUCTIONS
+        assert "gc_dolphin_step_frame" in server.SERVER_INSTRUCTIONS

@@ -33,7 +33,7 @@ leave every hotkey unbound. ``HOTKEY_DEVICE`` below is that string.
 The default bindings below match stock Dolphin (``HotkeyManager::LoadDefaults``).
 The only action without a default binding is **Frame Advance**, so the config
 builder adds a ``Frame Advance/Frame Advance = F8`` binding to the generated
-``Hotkeys.ini``; ``dolphin_hotkey_set`` can re-bind it.
+``Hotkeys.ini``; ``gc_dolphin_hotkey_set`` can re-bind it.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ HOTKEY_DEVICE = "XInput2/0/Virtual core pointer"
 
 #: The full set of hotkey bindings Dolphin binds by default (from
 #: ``HotkeyManager::LoadDefaults``, non-Windows), plus the Frame Advance binding
-#: we add so ``gc_emulator_step_frame`` works out of the box.
+#: we add so ``gc_dolphin_step_frame`` works out of the box.
 #:
 #: Dolphin loads ``Hotkeys.ini`` all-or-nothing: if the file exists, any control
 #: not listed is left *unbound* (empty expression) rather than falling back to a

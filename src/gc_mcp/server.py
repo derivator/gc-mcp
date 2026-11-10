@@ -71,6 +71,9 @@ SERVER_INSTRUCTIONS = (
     "a later frame). Prefer batching: use gc_controller_sequence to press a run "
     "of buttons in a single atomic call instead of many gc_controller_press / "
     "gc_controller_release round-trips.\n"
+    "- For analog menu navigation, use gc_controller_flick (the stick counterpart "
+    "of gc_controller_press_once) to push the stick and return it to centre in "
+    "one call.\n"
     "- Screen capture is slow and expensive (render + encode). Prefer doing "
     "several inputs *blind* (e.g. a whole menu-selection sequence) before "
     "re-checking the screen with gc_capture_screenshot. One capture per "
@@ -80,12 +83,16 @@ SERVER_INSTRUCTIONS = (
     "gc_memory_read_struct / gc_memory_write_struct, prefix the format with '>' "
     "(or '!'), e.g. \">12f\" for a 3x4 float matrix.\n\n"
     "Emulator control:\n"
-    "- Use gc_emulator_toggle_pause to pause (e.g. before inspecting memory), "
-    "gc_emulator_step_frame to advance one frame while paused, and "
-    "gc_emulator_save_state / gc_emulator_load_state (slots 1-8) to checkpoint.\n"
+    "- Use gc_dolphin_toggle_pause to pause (e.g. before inspecting memory), "
+    "gc_dolphin_step_frame to advance one frame while paused, and "
+    "gc_dolphin_save_state / gc_dolphin_load_state (slots 1-8) to checkpoint. "
+    "gc_dolphin_save_state also copies the state file into the states folder "
+    "(<data>/states, or pass copy_dir) so it survives instance removal.\n"
     "- These are driven by Dolphin hotkeys injected via xdotool; they need the "
-    "instance's X display and xdotool installed. gc_emulator_freeze / "
-    "gc_emulator_unfreeze are a coarse OS-level pause fallback.\n\n"
+    "instance's X display and xdotool installed. gc_dolphin_freeze / "
+    "gc_dolphin_unfreeze are a coarse OS-level pause fallback.\n"
+    "- Use gc_log (optionally tail=/grep=) to inspect the instance's Dolphin log "
+    "for crashes or ROM console output (OSReport).\n\n"
     "IPL boot:\n"
     "- gc_instance_start(boot_ipl=True) boots the original GameCube IPL "
     "(disables 'Skip System Menu'), so the boot logo/menu plays before the "
@@ -278,6 +285,19 @@ def gc_instance_remove(instance_id: str) -> dict:
     return manager.remove(instance_id)
 
 
+@mcp.tool()
+def gc_log(instance_id: str, tail: int | None = None, grep: str | None = None) -> dict:
+    """Read this instance's Dolphin log file (``<user_dir>/dolphin.log``).
+
+    Useful for diagnosing crashes, OSReport output from the ROM, or emulator
+    warnings. ``grep`` keeps only lines containing the (case-insensitive)
+    substring. ``tail`` returns only the last ``tail`` lines of the (possibly
+    filtered) output. Returns the matching lines and some metadata.
+    """
+    inst = _instance(instance_id)
+    return inst.read_log(tail=tail, grep=grep)
+
+
 # ---------------------------------------------------------------------------
 # Capture
 # ---------------------------------------------------------------------------
@@ -372,6 +392,24 @@ def gc_controller_press_once(instance_id: str, port: int, button: str,
     inst = _instance(instance_id)
     inst.controller_press_once(port, button, hold_duration)
     return {"port": port, "button": button, "hold_duration": hold_duration, "state": "released"}
+
+
+@mcp.tool()
+def gc_controller_flick(instance_id: str, port: int, stick: str,
+                        x: float, y: float, hold_duration: float = 200.0) -> dict:
+    """Flick an analog stick: push to (x, y), hold, then return to centre.
+
+    This is the analog counterpart to gc_controller_press_once — a single atomic
+    action you can use for menu navigation (e.g. nudge the stick up/down to move
+    a cursor) without pairing set_stick/reset calls.
+
+    stick is 'main' or 'c'. x/y are in -1..1 (0,0 = centre). The stick is always
+    returned to centre afterwards. hold_duration defaults to 200 ms.
+    """
+    inst = _instance(instance_id)
+    inst.controller_flick(port, stick, x, y, hold_duration)
+    return {"port": port, "stick": stick, "x": x, "y": y, "hold_duration": hold_duration,
+            "state": "centered"}
 
 
 @mcp.tool()
@@ -524,11 +562,11 @@ def gc_memory_write_struct(instance_id: str, address: int, fmt: str,
 # Emulator control (pause / step / save / load)
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def gc_emulator_toggle_pause(instance_id: str) -> dict:
+def gc_dolphin_toggle_pause(instance_id: str) -> dict:
     """Toggle the emulator's pause state (Dolphin's Toggle Pause hotkey, F10).
 
     Use this to pause a game (e.g. before inspecting memory or screen), then
-    resume. When paused, ``gc_emulator_step_frame`` advances exactly one frame.
+    resume. When paused, ``gc_dolphin_step_frame`` advances exactly one frame.
 
     This injects a keystroke into the instance's X display via ``xdotool``, so
     it requires the ``xvfb`` capture backend and ``xdotool`` installed. On a
@@ -540,14 +578,14 @@ def gc_emulator_toggle_pause(instance_id: str) -> dict:
 
 
 @mcp.tool()
-def gc_emulator_step_frame(instance_id: str) -> dict:
+def gc_dolphin_step_frame(instance_id: str) -> dict:
     """Advance exactly one frame when the emulator is paused.
 
     Sends Dolphin's Frame Advance hotkey. Unlike ``Step Into`` (a CPU-debugger
     step), Frame Advance steps one *video frame*, which is what a TAS tool wants.
 
     The instance config binds Frame Advance to ``F8`` by default (see
-    ``dolphin_hotkey_get``/``dolphin_hotkey_set``). If it is unbound this tool
+    ``gc_dolphin_hotkey_get``/``gc_dolphin_hotkey_set``). If it is unbound this tool
     returns ``ok=False`` and no frame advances.
     """
     inst = _instance(instance_id)
@@ -555,24 +593,30 @@ def gc_emulator_step_frame(instance_id: str) -> dict:
 
 
 @mcp.tool()
-def gc_emulator_save_state(instance_id: str, slot: int) -> dict:
-    """Save a save-state to ``slot`` (1-8) via Shift+F{slot}.
+def gc_dolphin_save_state(instance_id: str, slot: int,
+                          copy_dir: str | None = None) -> dict:
+    """Save a save-state to ``slot`` (1-8) via Shift+F{slot}, then copy it.
 
     Only slots 1-8 have a Dolphin default hotkey binding (see
-    ``dolphin_hotkey_get``).
+    ``gc_dolphin_hotkey_get``).
+
+    After saving, the state file is copied into ``copy_dir`` (or the server's
+    configured states directory, ``<data>/states``, by default). The result
+    includes ``copied``, ``state_file`` and ``copied_to``.
     """
     if not 1 <= slot <= 8:
         return {"ok": False, "error": f"slot must be 1-8, got {slot}"}
     inst = _instance(instance_id)
-    return inst.emulator_save_state(slot)
+    dest = Path(copy_dir) if copy_dir else None
+    return inst.emulator_save_state(slot, dest)
 
 
 @mcp.tool()
-def gc_emulator_load_state(instance_id: str, slot: int) -> dict:
+def gc_dolphin_load_state(instance_id: str, slot: int) -> dict:
     """Load a save-state from ``slot`` (1-8) via F{slot}.
 
     Only slots 1-8 have a Dolphin default hotkey binding (see
-    ``dolphin_hotkey_get``).
+    ``gc_dolphin_hotkey_get``).
     """
     if not 1 <= slot <= 8:
         return {"ok": False, "error": f"slot must be 1-8, got {slot}"}
@@ -581,12 +625,12 @@ def gc_emulator_load_state(instance_id: str, slot: int) -> dict:
 
 
 @mcp.tool()
-def gc_emulator_freeze(instance_id: str) -> dict:
+def gc_dolphin_freeze(instance_id: str) -> dict:
     """Hard-freeze the Dolphin process with SIGSTOP.
 
     This is a coarse OS-level pause that always works (no X display or xdotool
     needed). It is *not* compatible with frame-advance (the process is suspended,
-    so it cannot process hotkeys); use ``gc_emulator_toggle_pause`` for a
+    so it cannot process hotkeys); use ``gc_dolphin_toggle_pause`` for a
     TAS-friendly pause.
     """
     inst = _instance(instance_id)
@@ -594,7 +638,7 @@ def gc_emulator_freeze(instance_id: str) -> dict:
 
 
 @mcp.tool()
-def gc_emulator_unfreeze(instance_id: str) -> dict:
+def gc_dolphin_unfreeze(instance_id: str) -> dict:
     """Resume a frozen Dolphin process with SIGCONT."""
     inst = _instance(instance_id)
     return inst.emulator_unfreeze()
@@ -604,7 +648,7 @@ def gc_emulator_unfreeze(instance_id: str) -> dict:
 # Dolphin-only configuration tools
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def dolphin_config_get(instance_id: str, section: str, key: str) -> dict:
+def gc_dolphin_config_get(instance_id: str, section: str, key: str) -> dict:
     """Read a single Dolphin.ini configuration value for an instance.
 
     This is Dolphin-only (real hardware has no such config).
@@ -622,7 +666,7 @@ def dolphin_config_get(instance_id: str, section: str, key: str) -> dict:
 
 
 @mcp.tool()
-def dolphin_config_set(instance_id: str, section: str, key: str, value: str) -> dict:
+def gc_dolphin_config_set(instance_id: str, section: str, key: str, value: str) -> dict:
     """Set a single Dolphin.ini configuration value for an instance.
 
     Writes to the instance's Config/Dolphin.ini. This is Dolphin-only.
@@ -642,7 +686,7 @@ def dolphin_config_set(instance_id: str, section: str, key: str, value: str) -> 
 
 
 @mcp.tool()
-def dolphin_config_apply_profile(instance_id: str, profile: dict[str, dict[str, str]]) -> dict:
+def gc_dolphin_config_apply_profile(instance_id: str, profile: dict[str, dict[str, str]]) -> dict:
     """Apply a whole Dolphin.ini profile (a dict of section -> {key: value}).
 
     This is Dolphin-only. Existing keys in the same section are preserved unless
@@ -667,7 +711,7 @@ def dolphin_config_apply_profile(instance_id: str, profile: dict[str, dict[str, 
 
 
 @mcp.tool()
-def dolphin_hotkey_get(instance_id: str, key: str) -> dict:
+def gc_dolphin_hotkey_get(instance_id: str, key: str) -> dict:
     """Read a Dolphin emulator hotkey binding.
 
     ``key`` is the Hotkeys.ini key ``<group>/<control>`` (e.g.
@@ -693,7 +737,7 @@ def dolphin_hotkey_get(instance_id: str, key: str) -> dict:
 
 
 @mcp.tool()
-def dolphin_hotkey_set(instance_id: str, key: str, expression: str) -> dict:
+def gc_dolphin_hotkey_set(instance_id: str, key: str, expression: str) -> dict:
     """Set (or clear) a Dolphin emulator hotkey binding.
 
     ``key`` is the Hotkeys.ini key ``<group>/<control>``. ``expression`` is the
@@ -705,7 +749,7 @@ def dolphin_hotkey_set(instance_id: str, key: str, expression: str) -> dict:
     running instance may need a restart for the change to take effect. This is
     Dolphin-only.
 
-    Common keys (see ``gc_emulator_*`` tools): ``General/Toggle Pause``,
+    Common keys (see ``gc_dolphin_*`` tools): ``General/Toggle Pause``,
     ``Frame Advance/Frame Advance``, ``Save State/Save State Slot 1..8``,
     ``Load State/Load State Slot 1..8``.
     """
