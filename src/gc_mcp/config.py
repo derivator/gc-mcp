@@ -204,6 +204,28 @@ class ServerConfig:
     #: 3D X server display for VirtualGL's GLX back end (e.g. ":0.0").
     vgl_3d_display: str | None = field(default_factory=lambda: _env_str("GC_MCP_VGL_3D_DISPLAY", "") or None)
 
+    # Real GameCube hardware defaults
+    #: Default Video4Linux2 capture device for a hardware instance.
+    hw_capture_device: str = field(default_factory=lambda: _env_str("GC_MCP_HW_CAPTURE_DEVICE", "/dev/video0"))
+    hw_capture_width: int = field(default_factory=lambda: _env_int("GC_MCP_HW_CAPTURE_WIDTH", 640))
+    hw_capture_height: int = field(default_factory=lambda: _env_int("GC_MCP_HW_CAPTURE_HEIGHT", 480))
+    hw_capture_format: str = field(default_factory=lambda: _env_str("GC_MCP_HW_CAPTURE_FORMAT", "mjpg"))
+    hw_capture_fps: int = field(default_factory=lambda: _env_int("GC_MCP_HW_CAPTURE_FPS", 30))
+    hw_capture_flush: int = field(default_factory=lambda: _env_int("GC_MCP_HW_CAPTURE_FLUSH", 5))
+    #: How long to stream a cold V4L2 device before grabbing a frame (seconds).
+    #: A USB capture card only delivers real content after it has been fed a
+    #: continuous stream for a few seconds; ``0`` disables the warm-up.
+    hw_capture_warmup: float = field(default_factory=lambda: _env_float("GC_MCP_HW_CAPTURE_WARMUP", 5.0))
+    #: How long a warmed device is trusted before it must be warmed again (s).
+    hw_capture_warmup_ttl: float = field(default_factory=lambda: _env_float("GC_MCP_HW_CAPTURE_WARMUP_TTL", 60.0))
+    #: Default BBA IP for a hardware instance (the console's own IP, used to reach
+    #: the Swiss netboot listener for ``gc_rom_load``). Empty/None means a new
+    #: hardware instance must be given an IP explicitly via ``gc_hardware_register``
+    #: or ``gc_hardware_update`` before ROM loading works.
+    hw_bba_ip: str | None = field(default_factory=lambda: _env_str("GC_MCP_HW_BBA_IP", "") or None)
+    #: Default netboot listener port (Swiss listens on TCP 4242).
+    hw_bba_port: int = field(default_factory=lambda: _env_int("GC_MCP_HW_BBA_PORT", 4242))
+
     # Memory
     memory_backend: str = field(default_factory=lambda: _env_str("GC_MCP_MEMORY_BACKEND", "process_vm"))
 
@@ -249,6 +271,11 @@ class ServerConfig:
     @property
     def captures_dir(self) -> Path:
         return self.base_dir / "captures"
+
+    @property
+    def hardware_file(self) -> Path:
+        """The JSON file that persists real GameCube hardware instances."""
+        return self.base_dir / "hardware.json"
 
     @property
     def states_dir(self) -> Path:

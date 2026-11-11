@@ -7,9 +7,9 @@ and other peripherals), captures rendered output inside a Docker container, and
 manipulates all four GameCube controller ports.
 
 The tool surface is designed around a **unified `gc_` interface** that works on
-both the emulator and (eventually) real hardware. Anything that can only ever
-apply to the emulator (e.g. changing Dolphin's own configuration) is exposed
-under a `gc_dolphin_` prefix.
+both the emulator and real GameCube hardware. Anything that can only ever apply
+to the emulator (e.g. changing Dolphin's own configuration) is exposed under a
+`gc_dolphin_` prefix.
 
 ## Why
 
@@ -21,9 +21,11 @@ game state.
 ## Concepts
 
 - **Platform** — an abstraction over a target: `dolphin` (an emulator instance)
-  or `gamecube-hw` (real hardware, currently a stub that returns "unsupported").
+  or `gamecube-hw` (a real console). Hardware instances are **permanently
+  remembered** in `<data>/hardware.json` until explicitly removed.
 - **Instance** — one running Dolphin process, isolated by its own `--user` data
-  directory, with its own controllers, capture backend and memory backend.
+  directory, with its own controllers, capture backend and memory backend; or a
+  registered real GameCube hardware instance.
 - **Controller port** — one of the four GameCube controller ports (`0`–`3`).
 - **Capture backend** — how rendered frames are grabbed:
   - `xvfb` (default): Dolphin runs under a virtual X server (Xvfb) using OpenGL;
@@ -33,6 +35,11 @@ game state.
     `llvmpipe`.
   - `framedump`: Dolphin's built-in frame dump (`Movie.DumpFrames`) to PNG, as a
     fallback that needs no display server.
+  - `v4l2`: grab a frame from a Video4Linux2 capture device (e.g. a capture
+    card) for a real GameCube. Uses OpenCV (`cv2`) when installed, else
+    `ffmpeg -f v4l2`. A USB capture card only delivers real content after it has
+    been fed a continuous stream for a few seconds, so the backend **warms up**
+    a cold device (streaming it for `warmup_seconds`) before grabbing a frame.
 
 ## GPU rendering
 
@@ -74,6 +81,71 @@ Memory operations fail **gracefully**: if the emulator has not yet allocated RAM
 or is not running a game, `gc_memory_read`/`gc_memory_write` return an
 `is_error` result with a clear message rather than crashing the server.
 
+## Real GameCube hardware
+
+A real console is connected through a capture card / USB capture device exposed
+as a Video4Linux2 node (e.g. `/dev/video0`), and up to four serial devices that
+will act as the controller ports. Register it once; it is **remembered
+permanently** (persisted to `<data>/hardware.json`) until removed:
+
+```bash
+gc_hardware_devices            # probe /dev/video* and report capture capability
+gc_hardware_register("hw-001", capture_device="/dev/video0")
+gc_capture_screenshot("hw-001")   # grab a frame -> PNG
+gc_hardware_update("hw-001", serial_devices=["/dev/ttyUSB0", ...])
+gc_hardware_status("hw-001")
+gc_hardware_remove("hw-001")
+```
+
+`gc_hardware_devices` probes each node with `v4l2-ctl` and reports its card
+name, the pixel formats it exposes, and whether it can actually **capture video
+frames** (`can_capture`). Some nodes expose only UVC **metadata** (a capture
+card's second interface) and cannot produce a video stream — prefer a device
+with `can_capture: true`.
+
+Only **screen capture** and **ROM loading** are implemented for hardware so far;
+controller and memory operations raise "not implemented". Capture uses the `v4l2`
+backend, which prefers OpenCV (`cv2`, the same library as `cap_example.py`) for
+low-latency capture and falls back to `ffmpeg -f v4l2`.
+
+Some capture cards (e.g. the UGREEN USB one) return a placeholder/black frame
+until they have been streamed continuously for a few seconds. To handle this the
+backend **warms up** a cold device: on the first capture it streams for
+`warmup_seconds` (default `5`) and writes the final frame, then remembers the
+device as warm so subsequent captures are fast. A device is re-warmed if it has
+not been captured for `warmup_ttl` seconds (default `60`). Tune per instance with
+`gc_capture_configure("hw-001", warmup_seconds=5, warmup_ttl=60)`.
+
+### ROM loading (Swiss netboot)
+
+A real console boots a ROM through **Swiss's netboot listener**: a custom Swiss
+build listens on TCP **4242** of the console's own **BBA IP**, and a one-line
+`BOOT <path>` command starts a game from the console's own media. The path is a
+**console-side** path starting with `sdc:/` (SD2SP2) or `fsp:/` (the configured
+FSP file server):
+
+```bash
+gc_hardware_update("hw-001", bba_ip="192.168.1.61")   # remember the console's IP
+gc_rom_load("hw-001", "sdc:/games/Foo.iso")           # boot the game
+```
+
+`gc_rom_load` is the **unified** entry point across targets:
+
+* **Real hardware** — sends `BOOT` to the netboot listener. Set `bba_ip` with
+  `gc_hardware_register(..., bba_ip=...)` or `gc_hardware_update(...)`; it is
+  persisted on the hardware instance. If the console is currently **inside a
+  game** the listener is down, so `gc_rom_load` first tries to return to Swiss
+  with the A+Z+START combo — which needs hardware button pressing and is **not
+  implemented yet** (it raises "not implemented" until then).
+* **Dolphin instance** — stops the current process and relaunches it booting a
+  **host-side** ROM/DOL/ELF path, keeping the instance id and config.
+
+The netboot protocol is one command per TCP connection (`PING`→`PONG`,
+`STATUS`→`READY`/`BUSY`, `BOOT <path>`→`OK`/`ERR <reason>`). See
+`~/swiss-gc/NETBOOT_USAGE.md` for the exact protocol and
+`~/swiss-gc/NETBOOT_PLAN.md` for the verified setup (console at
+`192.168.1.61/24`, `InitNetwork=Yes` in `swiss/settings/global.ini`).
+
 ## Running
 
 Requires **mcp v2.x** (the server uses `MCPServer`; `FastMCP` was removed in
@@ -104,6 +176,16 @@ Environment variables (all optional):
 | `GC_MCP_GPU_DEVICE` | auto-detected | GPU DRM device path (e.g. `/dev/dri/card2`) |
 | `GC_MCP_VGL_3D_DISPLAY` | empty | 3D X server display for VirtualGL's GLX back end (e.g. `:0.0`) |
 | `GC_MCP_MEMORY_BACKEND` | `process_vm` | `process_vm` or `dolphin_engine` |
+| `GC_MCP_HW_CAPTURE_DEVICE` | `/dev/video0` | Default capture device for real hardware instances |
+| `GC_MCP_HW_CAPTURE_WIDTH` | `640` | Default hardware capture width |
+| `GC_MCP_HW_CAPTURE_HEIGHT` | `480` | Default hardware capture height |
+| `GC_MCP_HW_CAPTURE_FORMAT` | `mjpg` | Default hardware capture pixel format (`mjpg`, `yuyv`, ...) |
+| `GC_MCP_HW_CAPTURE_FPS` | `30` | Default hardware capture frame rate |
+| `GC_MCP_HW_CAPTURE_FLUSH` | `5` | Stale buffers flushed before reading a fresh frame (OpenCV path) |
+| `GC_MCP_HW_CAPTURE_WARMUP` | `5` | Seconds to stream a cold device before grabbing a frame (`0` disables) |
+| `GC_MCP_HW_CAPTURE_WARMUP_TTL` | `60` | Seconds a warmed device is trusted before it is warmed again |
+| `GC_MCP_HW_BBA_IP` | empty | Default BBA IP for a new hardware instance (the console's own IP, used to reach the Swiss netboot listener) |
+| `GC_MCP_HW_BBA_PORT` | `4242` | Default Swiss netboot listener port |
 
 ## Docker
 
@@ -119,6 +201,7 @@ All tools take an `instance_id` where relevant.
 - `gc_platform_list`, `gc_platform_capabilities`
 - `gc_instance_start`, `gc_instance_list`, `gc_instance_status`, `gc_instance_stop`, `gc_instance_remove`
 - `gc_capture_backends`, `gc_capture_configure`, `gc_capture_screenshot`
+- `gc_hardware_devices`, `gc_hardware_register`, `gc_hardware_update`, `gc_hardware_list`, `gc_hardware_status`, `gc_hardware_remove`
 - `gc_controller_press`, `gc_controller_release`, `gc_controller_set_stick`, `gc_controller_set_trigger`, `gc_controller_sequence`, `gc_controller_sequence_cancel`, `gc_controller_get_state`, `gc_controller_reset`
 - `gc_memory_read`, `gc_memory_write`
 - `gc_dolphin_config_get`, `gc_dolphin_config_set`, `gc_dolphin_config_apply_profile`

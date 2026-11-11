@@ -47,6 +47,11 @@ class Platform(ABC):
         ...
 
     @abstractmethod
+    def controller_flick(self, port: int, stick: str, x: float, y: float,
+                         hold_duration: float = 200.0) -> None:
+        ...
+
+    @abstractmethod
     def controller_set_stick(self, port: int, stick: str, x: float, y: float) -> None:
         ...
 
@@ -75,6 +80,25 @@ class Platform(ABC):
     # ------------------------------------------------------------------
     @abstractmethod
     def capture_screenshot(self, dest_path: Path | str) -> Path:
+        ...
+
+    @abstractmethod
+    def capture_configure(self, **opts: object) -> dict:
+        """Configure the capture backend and return the effective config."""
+        ...
+
+    # ------------------------------------------------------------------
+    # ROM loading
+    # ------------------------------------------------------------------
+    @abstractmethod
+    def rom_load(self, rom_path: str) -> dict:
+        """Boot/load a ROM on this target.
+
+        For a Dolphin instance this stops the current process and relaunches it
+        booting the given host-side ROM path. For a real GameCube this sends a
+        ``BOOT`` command to the console's Swiss netboot listener, so the path is
+        a console-side path (``sdc:/`` or ``fsp:/``).
+        """
         ...
 
     # ------------------------------------------------------------------

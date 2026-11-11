@@ -83,3 +83,14 @@ class SequenceError(GCMCPError):
     """A timed input sequence failed to schedule or run."""
 
     code = -32009
+
+
+class NetbootError(GCMCPError):
+    """A Swiss netboot (TCP 4242) operation failed.
+
+    Raised when the console's netboot listener cannot be reached, returns an
+    ``ERR`` reply, or when the console is not bootable because it is still
+    inside a game and hardware button pressing is not implemented.
+    """
+
+    code = -32010

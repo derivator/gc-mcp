@@ -75,6 +75,16 @@ class DolphinPlatform(Platform):
     def capture_screenshot(self, dest_path: Path | str) -> Path:
         return self.instance.capture.capture(Path(dest_path))
 
+    def capture_configure(self, **opts: object) -> dict:
+        return self.instance.capture.configure(**opts)
+
+    # ------------------------------------------------------------------
+    # ROM loading
+    # ------------------------------------------------------------------
+    def rom_load(self, rom_path: str) -> dict:
+        """Stop this instance and relaunch it booting the given host ROM path."""
+        return self.instance.relaunch(rom_path)
+
     # ------------------------------------------------------------------
     # Memory
     # ------------------------------------------------------------------

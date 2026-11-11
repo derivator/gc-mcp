@@ -4,9 +4,17 @@ from pathlib import Path
 
 from .base import CaptureBackend
 from .framedump import FrameDumpCapture
+from .v4l2 import V4L2Capture, detect_video_devices
 from .xvfb import Xvfb, XvfbCapture
 
-__all__ = ["CaptureBackend", "FrameDumpCapture", "Xvfb", "XvfbCapture"]
+__all__ = [
+    "CaptureBackend",
+    "FrameDumpCapture",
+    "V4L2Capture",
+    "detect_video_devices",
+    "Xvfb",
+    "XvfbCapture",
+]
 
 
 def create_capture_backend(name: str, *, display: int | None = None,
@@ -20,4 +28,6 @@ def create_capture_backend(name: str, *, display: int | None = None,
         if display is None:
             raise ValueError("xvfb capture backend requires a display number")
         return XvfbCapture(display, **opts)
+    if name == "v4l2":
+        return V4L2Capture(**opts)
     raise ValueError(f"unknown capture backend: {name!r}")

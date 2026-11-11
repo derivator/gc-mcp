@@ -24,7 +24,7 @@ from typing import Any
 from ..capture import CaptureBackend, FrameDumpCapture, Xvfb, XvfbCapture
 from ..config import ServerConfig, parse_resolution, resolve_gpu_accel
 from ..controllers import DolphinPipesController
-from ..errors import StartupError
+from ..errors import NotFoundError, StartupError
 from ..keyboard import KeyboardInjector
 from ..memory import ProcessVMMemory
 from .config_builder import InstanceConfig, InstanceConfigBuilder
@@ -423,6 +423,28 @@ class DolphinInstance:
             "returned_lines": len(lines),
             "lines": lines,
         }
+
+    # ------------------------------------------------------------------
+    # ROM reload (unified gc_rom_load)
+    # ------------------------------------------------------------------
+    def relaunch(self, rom_path: str | Path, timeout: float = 5.0) -> dict:
+        """Stop the current process and relaunch booting a new ROM.
+
+        The instance keeps its id, data dir, display and configuration; only the
+        ROM path changes. This lets the unified ``gc_rom_load`` point a running
+        Dolphin instance at a different game without creating a fresh instance.
+
+        Args:
+            rom_path: Host-side path to a ``.iso``/``.gcm``/``.dol``/``.elf``.
+            timeout: Seconds to wait for the old process to exit.
+        """
+        rom = Path(rom_path).expanduser().resolve()
+        if not rom.is_file():
+            raise NotFoundError(f"ROM/DOL/ELF file not found: {rom}")
+        self.stop(timeout=timeout)
+        self._stop_requested = False
+        self.spec.rom_path = rom
+        return self.start()
 
     # ------------------------------------------------------------------
     # Shutdown

@@ -1,4 +1,4 @@
-"""Dolphin instance lifecycle & configuration."""
+"""Instance lifecycle & configuration (Dolphin emulators and real hardware)."""
 
 from .config_builder import (
     BBA_MODE_EXI,
@@ -15,6 +15,8 @@ from .config_builder import (
     normalize_mac,
 )
 from .dolphin_instance import DolphinInstance, InstanceSpec
+from .hardware_instance import MAX_SERIAL_DEVICES, HardwareInstance, HardwareInstanceSpec
+from .hardware_manager import HardwareManager
 from .manager import InstanceManager
 
 __all__ = [
@@ -32,5 +34,9 @@ __all__ = [
     "normalize_mac",
     "DolphinInstance",
     "InstanceSpec",
+    "MAX_SERIAL_DEVICES",
+    "HardwareInstance",
+    "HardwareInstanceSpec",
+    "HardwareManager",
     "InstanceManager",
 ]
