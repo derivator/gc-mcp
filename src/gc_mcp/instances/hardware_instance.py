@@ -37,6 +37,15 @@ MAX_SERIAL_DEVICES = 4
 #: Default netboot listener port (Swiss listens on TCP 4242).
 DEFAULT_BBA_PORT = 4242
 
+#: How long (seconds) to wait for the Swiss netboot listener to come back up
+#: after the A+Z+START return-to-Swiss combo before giving up. The console
+#: resets and reboots Swiss, which takes a few seconds before the listener
+#: starts answering.
+RETURN_TO_SWISS_WAIT = 20.0
+
+#: Poll interval (seconds) while waiting for the listener to come back up.
+_RETURN_TO_SWISS_POLL = 1.0
+
 
 @dataclass
 class HardwareInstanceSpec:
@@ -114,8 +123,8 @@ class HardwareInstance:
 
         ``rom_path`` is a *console-side* path (``sdc:/`` or ``fsp:/``). If the
         console is currently inside a game the netboot listener is down, so this
-        first tries to return to Swiss with the A+Z+START combo (which needs
-        hardware button pressing, not implemented yet).
+        first returns to Swiss with the A+Z+START combo and waits for the
+        listener to come back up before booting.
         """
         if not self.spec.bba_ip:
             raise NetbootError(
@@ -127,6 +136,7 @@ class HardwareInstance:
         # If the listener is down the console is inside a game; get back to Swiss.
         if not client.reachable():
             self._return_to_swiss()
+            self._wait_for_swiss(client)
         status = client.status()
         if status.upper() == "BUSY":
             return {
@@ -168,6 +178,25 @@ class HardwareInstance:
         time.sleep(0.2)
         for button in reversed(buttons):
             self.controller.release(0, button)
+
+    def _wait_for_swiss(self, client: NetbootClient) -> None:
+        """Wait for the Swiss netboot listener to come back up.
+
+        After ``_return_to_swiss`` presses A+Z+START the console resets and
+        reboots Swiss, which takes a few seconds before its netboot listener
+        starts answering. Poll the listener for up to :data:`RETURN_TO_SWISS_WAIT`
+        seconds, raising :class:`NetbootError` if it never comes up.
+        """
+        deadline = time.monotonic() + RETURN_TO_SWISS_WAIT
+        while time.monotonic() < deadline:
+            if client.reachable():
+                return
+            time.sleep(_RETURN_TO_SWISS_POLL)
+        raise NetbootError(
+            "returned to Swiss with the A+Z+START combo but the netboot "
+            "listener never came back up; the console may still be booting or "
+            "the combo was not caught"
+        )
 
     # ------------------------------------------------------------------
     # Capture backend (built lazily from the spec so configure() stays in sync)

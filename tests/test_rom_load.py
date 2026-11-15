@@ -159,6 +159,68 @@ class TestHardwareRomLoad:
         assert result["booted"] is False
         assert result["reply"] == "ERR disk not found"
 
+    def test_rom_load_returns_to_swiss_then_boots(self, tmp_path, monkeypatch):
+        # Listener down -> _return_to_swiss presses A+Z+START -> _wait_for_swiss
+        # polls until the listener is back -> boots the requested ROM.
+        inst = _make_hw_inst(tmp_path, bba_ip="192.168.1.61")
+        fake_ctl = FakeController()
+        inst._controller = fake_ctl
+        boot_calls: list[str] = []
+
+        class F:
+            def __init__(self) -> None:
+                self.n = 0
+
+            def reachable(self) -> bool:
+                self.n += 1
+                # Down on the initial probe, then back up for _wait_for_swiss.
+                return self.n >= 2
+
+            def status(self) -> str:
+                return "READY"
+
+            def boot(self, path: str) -> str:
+                boot_calls.append(path)
+                return "OK"
+
+        monkeypatch.setattr(inst, "netboot_client", lambda timeout=None: F())
+        monkeypatch.setattr("gc_mcp.instances.hardware_instance._RETURN_TO_SWISS_POLL", 0.001)
+        result = inst.rom_load("sdc:/games/Foo.iso")
+        assert result["booted"] is True
+        presses = [c for c in fake_ctl.calls if c[0] == "press"]
+        assert presses == [("press", 0, "A"), ("press", 0, "Z"), ("press", 0, "START")]
+        assert boot_calls == ["sdc:/games/Foo.iso"]
+
+    def test_wait_for_swiss_retries_until_reachable(self, tmp_path, monkeypatch):
+        inst = _make_hw_inst(tmp_path)
+        calls: list[int] = []
+
+        class F:
+            def __init__(self) -> None:
+                self.n = 0
+
+            def reachable(self) -> bool:
+                calls.append(1)
+                self.n += 1
+                return self.n >= 3
+
+        monkeypatch.setattr("gc_mcp.instances.hardware_instance._RETURN_TO_SWISS_POLL", 0.001)
+        inst._wait_for_swiss(F())
+        assert len(calls) == 3
+
+    def test_wait_for_swiss_times_out(self, tmp_path, monkeypatch):
+        inst = _make_hw_inst(tmp_path)
+
+        class F:
+            def reachable(self) -> bool:
+                return False
+
+        monkeypatch.setattr("gc_mcp.instances.hardware_instance._RETURN_TO_SWISS_POLL", 0.001)
+        monkeypatch.setattr("gc_mcp.instances.hardware_instance.RETURN_TO_SWISS_WAIT", 0.05)
+        with pytest.raises(NetbootError) as exc:
+            inst._wait_for_swiss(F())
+        assert "never came back up" in str(exc.value)
+
 
 # ---------------------------------------------------------------------------
 # GameCubeHWPlatform controller delegation
