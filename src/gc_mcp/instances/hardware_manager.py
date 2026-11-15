@@ -190,12 +190,15 @@ class HardwareManager:
         inst = self._instances.get(instance_id)
         if inst is None:
             raise NotFoundError(f"unknown hardware instance {instance_id!r}")
+        inst.close()
         self._instances.pop(instance_id, None)
         self._save()
         return {"instance_id": instance_id, "removed": True}
 
     def shutdown(self) -> None:
-        """Release capture resources. Hardware instances have no subprocess."""
+        """Release controller/capture resources. Hardware instances have no subprocess."""
+        for inst in self._instances.values():
+            inst.close()
         self._instances.clear()
 
     def __len__(self) -> int:

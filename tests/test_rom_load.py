@@ -8,7 +8,7 @@ import pytest
 
 import gc_mcp.server as server
 from gc_mcp.config import ServerConfig
-from gc_mcp.errors import NetbootError, NotFoundError, UnsupportedError
+from gc_mcp.errors import ControllerError, NetbootError, NotFoundError
 from gc_mcp.instances import (
     HardwareInstance,
     HardwareInstanceSpec,
@@ -138,12 +138,13 @@ class TestHardwareRomLoad:
 
     def test_rom_load_listener_down_tries_return_to_swiss(self, tmp_path, monkeypatch):
         # Listener down -> reachable() False -> _return_to_swiss() presses
-        # A+Z+START -> controller stub raises "not implemented".
+        # A+Z+START on port 0. With no serial device configured this raises
+        # ControllerError (there is nothing to press the buttons with).
         inst = _make_hw_inst(tmp_path, bba_ip="192.168.1.61")
         _patch_netboot(monkeypatch, inst, reachable=False)
-        with pytest.raises(UnsupportedError) as exc:
+        with pytest.raises(ControllerError) as exc:
             inst.rom_load("sdc:/games/Foo.iso")
-        assert "not implemented" in str(exc.value)
+        assert "no serial device" in str(exc.value)
 
     def test_rom_load_missing_bba_ip_raises_netboot_error(self, tmp_path):
         inst = _make_hw_inst(tmp_path)  # no bba_ip
@@ -202,13 +203,26 @@ class TestHardwareControllerDelegation:
         assert ("set_trigger", 0, "L", 0.5) in fake.calls
         assert ("reset", 0) in fake.calls
 
-    def test_controller_press_still_unsupported_with_real_stub(self, tmp_path):
-        # Without a fake backend, the real stub still raises "not implemented".
+    def test_controller_press_without_serial_device_raises(self, tmp_path):
+        # The real backend needs a serial device for the port; without one it
+        # raises ControllerError rather than silently doing nothing.
         inst = _make_hw_inst(tmp_path)
         plat = GameCubeHWPlatform(inst)
-        with pytest.raises(UnsupportedError) as exc:
+        with pytest.raises(ControllerError) as exc:
             plat.controller_press(0, "A")
-        assert "not implemented" in str(exc.value)
+        assert "no serial device" in str(exc.value)
+
+    def test_return_to_swiss_presses_a_z_start_together(self, tmp_path):
+        # _return_to_swiss presses A, Z and START, holds them, then releases in
+        # reverse order. Use a fake controller so no serial device is needed.
+        inst = _make_hw_inst(tmp_path)
+        fake = FakeController()
+        inst._controller = fake
+        inst._return_to_swiss()
+        presses = [c for c in fake.calls if c[0] == "press"]
+        releases = [c for c in fake.calls if c[0] == "release"]
+        assert presses == [("press", 0, "A"), ("press", 0, "Z"), ("press", 0, "START")]
+        assert releases == [("release", 0, "START"), ("release", 0, "Z"), ("release", 0, "A")]
 
 
 # ---------------------------------------------------------------------------

@@ -17,7 +17,12 @@ from gc_mcp.capture.v4l2 import (
     _parse_formats,
 )
 from gc_mcp.config import ServerConfig
-from gc_mcp.errors import AlreadyExistsError, CaptureError, NotFoundError
+from gc_mcp.errors import (
+    AlreadyExistsError,
+    CaptureError,
+    ControllerError,
+    NotFoundError,
+)
 from gc_mcp.instances import (
     HardwareInstance,
     HardwareInstanceSpec,
@@ -470,15 +475,17 @@ class TestGameCubeHWPlatform:
         assert result["height"] == 240
         assert HardwareManager(cfg).status("hw-001")["capture"]["width"] == 320
 
-    def test_controller_unsupported(self, tmp_path):
+    def test_controller_press_without_serial_device_raises(self, tmp_path):
         inst = HardwareInstance(
             HardwareInstanceSpec(instance_id="hw-001"),
             make_hw_config(tmp_path),
         )
         plat = GameCubeHWPlatform(inst)
-        with pytest.raises(Exception) as exc:
+        # The controller backend needs a serial device for the port; without one
+        # it raises a ControllerError describing the missing device.
+        with pytest.raises(ControllerError) as exc:
             plat.controller_press(0, "A")
-        assert "not implemented" in str(exc.value)
+        assert "no serial device" in str(exc.value)
 
     def test_memory_unsupported(self, tmp_path):
         inst = HardwareInstance(

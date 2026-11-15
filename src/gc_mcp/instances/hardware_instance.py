@@ -83,12 +83,20 @@ class HardwareInstance:
         self._controller: HardwareController | None = None
 
     # ------------------------------------------------------------------
-    # Controller backend (serial devices - a stub until the protocol is defined)
+    # Controller backend (serial devices)
     # ------------------------------------------------------------------
     @property
     def controller(self) -> HardwareController:
+        devices = list(self.spec.serial_devices)
         if self._controller is None:
-            self._controller = HardwareController()
+            self._controller = HardwareController(devices)
+        elif (isinstance(self._controller, HardwareController)
+              and self._controller.serial_devices != devices):
+            # The configured serial devices changed; rebuild the backend so the
+            # new ports are used. (A test/other backend swapped in directly is
+            # left untouched.)
+            self._controller.close()
+            self._controller = HardwareController(devices)
         return self._controller
 
     # ------------------------------------------------------------------
@@ -149,10 +157,10 @@ class HardwareInstance:
     def _return_to_swiss(self) -> None:
         """Return to Swiss from inside a game by pressing A+Z+START.
 
-        This requires hardware button pressing, which is not implemented yet —
-        the controller backend raises :class:`UnsupportedError`. When it is
-        implemented this will press all three buttons simultaneously, hold them
-        briefly, then release.
+        The three buttons are pressed together (the serial controller holds them
+        via its repeater thread), held briefly so Swiss can catch the combo, then
+        released. Pressing on a port with no serial device raises
+        :class:`ControllerError`.
         """
         buttons = ("A", "Z", "START")
         for button in buttons:
@@ -209,6 +217,12 @@ class HardwareInstance:
     # ------------------------------------------------------------------
     # Status
     # ------------------------------------------------------------------
+    def close(self) -> None:
+        """Release the controller backend (serial ports + repeater thread)."""
+        if self._controller is not None:
+            self._controller.close()
+            self._controller = None
+
     def capture_ready(self) -> bool:
         """Whether the capture device currently exists and is a char device."""
         device = Path(self.spec.capture_device)
