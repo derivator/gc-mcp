@@ -7,7 +7,6 @@ display numbers, and routes operations to the right instance.
 from __future__ import annotations
 
 import re
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -66,15 +65,16 @@ class InstanceManager:
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
-    def start(self, instance_id: str, rom_path: str | Path, *, controller_ports=None,
-              bba_mode: str | None = None, bba_mac: str | None = None,
-              video_backend: str | None = None, capture_backend: str | None = None,
-              memory_backend: str | None = None, internal_resolution: int | None = None,
-              native_resolution: str | None = None, gpu_accel: str | None = None,
-              extra_core: dict | None = None, extra_pad: dict | None = None,
-              extra_args: list | None = None, boot_ipl: bool = False,
-              info: str | None = None, **kwargs) -> dict:
-        """Create and start a new Dolphin instance."""
+    def _build_instance(self, instance_id: str, rom_path: str | Path, *,
+                        controller_ports=None,
+                        bba_mode: str | None = None, bba_mac: str | None = None,
+                        video_backend: str | None = None, capture_backend: str | None = None,
+                        memory_backend: str | None = None, internal_resolution: int | None = None,
+                        native_resolution: str | None = None, gpu_accel: str | None = None,
+                        extra_core: dict | None = None, extra_pad: dict | None = None,
+                        extra_args: list | None = None, boot_ipl: bool = False,
+                        info: str | None = None, **kwargs) -> DolphinInstance:
+        """Validate the arguments and build a new (not yet started) instance."""
         instance_id = self._validate_id(instance_id)
         if instance_id in self._instances:
             raise AlreadyExistsError(f"instance {instance_id!r} already exists")
@@ -110,15 +110,79 @@ class InstanceManager:
             boot_ipl=boot_ipl,
         )
 
-        instance = DolphinInstance(spec, self.config)
+        return DolphinInstance(spec, self.config)
+
+    def create(self, instance_id: str, rom_path: str | Path, *,
+               controller_ports=None,
+               bba_mode: str | None = None, bba_mac: str | None = None,
+               video_backend: str | None = None, capture_backend: str | None = None,
+               memory_backend: str | None = None, internal_resolution: int | None = None,
+               native_resolution: str | None = None, gpu_accel: str | None = None,
+               extra_core: dict | None = None, extra_pad: dict | None = None,
+               extra_args: list | None = None, boot_ipl: bool = False,
+               info: str | None = None, **kwargs) -> dict:
+        """Create a new Dolphin instance without launching it.
+
+        The instance is registered (so it appears in ``list``/``status``) and its
+        data directory is created, but Dolphin is not started. Use
+        :meth:`start` (or the unified ``gc_instance_start`` tool) to boot it.
+        """
+        instance = self._build_instance(
+            instance_id, rom_path,
+            controller_ports=controller_ports,
+            bba_mode=bba_mode,
+            bba_mac=bba_mac,
+            video_backend=video_backend,
+            capture_backend=capture_backend,
+            memory_backend=memory_backend,
+            internal_resolution=internal_resolution,
+            native_resolution=native_resolution,
+            gpu_accel=gpu_accel,
+            extra_core=extra_core,
+            extra_pad=extra_pad,
+            extra_args=extra_args,
+            boot_ipl=boot_ipl,
+            info=info,
+            **kwargs,
+        )
+        self._instances[instance.spec.instance_id] = instance
+        return instance.status()
+
+    def start(self, instance_id: str, rom_path: str | Path, *, controller_ports=None,
+              bba_mode: str | None = None, bba_mac: str | None = None,
+              video_backend: str | None = None, capture_backend: str | None = None,
+              memory_backend: str | None = None, internal_resolution: int | None = None,
+              native_resolution: str | None = None, gpu_accel: str | None = None,
+              extra_core: dict | None = None, extra_pad: dict | None = None,
+              extra_args: list | None = None, boot_ipl: bool = False,
+              info: str | None = None, **kwargs) -> dict:
+        """Create and start a new Dolphin instance."""
+        instance = self._build_instance(
+            instance_id, rom_path,
+            controller_ports=controller_ports,
+            bba_mode=bba_mode,
+            bba_mac=bba_mac,
+            video_backend=video_backend,
+            capture_backend=capture_backend,
+            memory_backend=memory_backend,
+            internal_resolution=internal_resolution,
+            native_resolution=native_resolution,
+            gpu_accel=gpu_accel,
+            extra_core=extra_core,
+            extra_pad=extra_pad,
+            extra_args=extra_args,
+            boot_ipl=boot_ipl,
+            info=info,
+            **kwargs,
+        )
         # Register first so a concurrent status/list sees it even while booting.
-        self._instances[instance_id] = instance
+        self._instances[instance.spec.instance_id] = instance
         try:
             status = instance.start()
             instance.wait_ready()
         except Exception:
             # Clean up a partially-started instance so it doesn't linger.
-            self._instances.pop(instance_id, None)
+            self._instances.pop(instance.spec.instance_id, None)
             instance.close()
             raise
 
@@ -163,7 +227,9 @@ class InstanceManager:
         for instance in list(self._instances.values()):
             try:
                 instance.stop()
-            except Exception:
+            except Exception:  # noqa: BLE001, S110 - keep stopping the rest
+                # Best-effort: a single instance failing to stop must not
+                # prevent the remaining instances from being cleaned up.
                 pass
         self._instances.clear()
 

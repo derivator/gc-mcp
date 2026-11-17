@@ -97,11 +97,7 @@ def normalize_mac(mac: str | None, default_prefix: str = "00:09:bf") -> str:
         # is preferable; here we fall back to a random host part.
         import random
 
-        host = "%02x:%02x:%02x" % (
-            random.randint(0, 255),
-            random.randint(0, 255),
-            random.randint(0, 255),
-        )
+        host = f"{random.randint(0, 255):02x}:{random.randint(0, 255):02x}:{random.randint(0, 255):02x}"
         return f"{prefix}:{host}"
     mac = str(mac).strip().lower()
     if not mac.startswith(VALID_MAC_PREFIXES):

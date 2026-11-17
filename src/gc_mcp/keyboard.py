@@ -178,6 +178,7 @@ class KeyboardInjector:
                 timeout=self.timeout,
                 text=True,
                 env=env,
+                check=False,
             )
         except FileNotFoundError as exc:
             raise RuntimeError(

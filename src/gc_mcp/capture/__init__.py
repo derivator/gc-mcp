@@ -11,9 +11,9 @@ __all__ = [
     "CaptureBackend",
     "FrameDumpCapture",
     "V4L2Capture",
-    "detect_video_devices",
     "Xvfb",
     "XvfbCapture",
+    "detect_video_devices",
 ]
 
 

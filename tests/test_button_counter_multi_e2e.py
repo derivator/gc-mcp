@@ -25,30 +25,27 @@ What we verify:
 
 Run manually:
     GC_MCP_BUTTON_COUNTER_ROM=/path/to/button-counter.dol .venv/bin/python tests/test_button_counter_multi_e2e.py
+    # or put GC_MCP_BUTTON_COUNTER_ROM=/path/to/button-counter.dol in the
+    # git-ignored .e2e.env file.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 import re
-import sys
 from pathlib import Path
 
+import e2e_config
 from mcp import ClientSession
-from mcp.client.stdio import stdio_client, StdioServerParameters
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / ".venv" / "bin" / "gc-mcp"
 
-#: Path to the button-counter ROM. Override via the ``GC_MCP_BUTTON_COUNTER_ROM`` env var.
-ROM = os.environ.get("GC_MCP_BUTTON_COUNTER_ROM", "")
-if not ROM:
-    raise SystemExit(
-        "Set GC_MCP_BUTTON_COUNTER_ROM to the path of the button-counter "
-        "GameCube .dol to run this e2e test."
-    )
+#: Path to the button-counter ROM. Set via the ``GC_MCP_BUTTON_COUNTER_ROM`` env
+#: var or the git-ignored ``.e2e.env`` file.
+ROM = e2e_config.resolve("GC_MCP_BUTTON_COUNTER_ROM")
 
 #: A press line: ``Controller 1: A pressed (total N)``. Capture the running total.
 _PRESS_RE = re.compile(r"Controller \d+: .+ pressed \(total (\d+)\)")
@@ -190,10 +187,17 @@ def _check(label: str, ok: bool, detail: str = "") -> bool:
 # Main test flow
 # ---------------------------------------------------------------------------
 async def main() -> int:
+    if not ROM:
+        print(
+            "Set GC_MCP_BUTTON_COUNTER_ROM to the path of the button-counter "
+            "GameCube .dol, or put GC_MCP_BUTTON_COUNTER_ROM=<path> in the "
+            "git-ignored .e2e.env file, to run this e2e test."
+        )
+        return 1
     params = StdioServerParameters(command=str(SERVER), cwd=str(ROOT))
     all_ok = True
 
-    async with stdio_client(params) as (read, write):
+    async with stdio_client(params) as (read, write):  # noqa: SIM117
         async with ClientSession(read, write) as session:
             await session.initialize()
 
@@ -201,12 +205,20 @@ async def main() -> int:
             try:
                 # --- Start two button-counter instances ---------------------
                 for iid in ("btn-a", "btn-b"):
-                    st = await _call(session, "gc_instance_start", {
+                    # Configure the instance at creation time (the config no
+                    # longer lives on gc_instance_start), then boot it.
+                    created = await _call(session, "gc_instance_create_emulator", {
                         "instance_id": iid,
                         "rom_path": ROM,
                         "controller_ports": [0],
                         "capture_backend": "xvfb",
                         "gpu_accel": "vgl",
+                    })
+                    if created.get("instance_id") != iid or created.get("running", True):
+                        raise RuntimeError(f"{iid} create failed: {created}")
+                    st = await _call(session, "gc_instance_start", {
+                        "instance_id": iid,
+                        "rom_path": ROM,
                     })
                     if not st.get("running", False):
                         raise RuntimeError(f"{iid} did not start: {st}")

@@ -89,7 +89,7 @@ class XvfbCapture(CaptureBackend):
 
     def _run(self, cmd: list[str]) -> subprocess.CompletedProcess:
         try:
-            return subprocess.run(cmd, capture_output=True, timeout=30)
+            return subprocess.run(cmd, capture_output=True, timeout=30, check=False)
         except FileNotFoundError as exc:
             raise CaptureError(f"required capture tool not found: {cmd[0]}") from exc
         except subprocess.TimeoutExpired as exc:

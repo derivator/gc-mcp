@@ -19,7 +19,6 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from ..capture import CaptureBackend, FrameDumpCapture, Xvfb, XvfbCapture
 from ..config import ServerConfig, parse_resolution, resolve_gpu_accel
@@ -364,7 +363,7 @@ class DolphinInstance:
         try:
             # A reader is present only once Dolphin has opened the FIFO's read end.
             return self._controller.probe(0)
-        except Exception:
+        except Exception:  # noqa: BLE001 - a probe failure means "not ready"
             return False
 
     def _memory_ready(self) -> bool:
@@ -428,14 +427,15 @@ class DolphinInstance:
         }
 
     # ------------------------------------------------------------------
-    # ROM reload (unified gc_rom_load)
+    # ROM reload (unified gc_instance_start)
     # ------------------------------------------------------------------
     def relaunch(self, rom_path: str | Path, timeout: float = 5.0) -> dict:
         """Stop the current process and relaunch booting a new ROM.
 
         The instance keeps its id, data dir, display and configuration; only the
-        ROM path changes. This lets the unified ``gc_rom_load`` point a running
-        Dolphin instance at a different game without creating a fresh instance.
+        ROM path changes. This lets the unified ``gc_instance_start`` point a
+        running Dolphin instance at a different game without creating a fresh
+        instance.
 
         Args:
             rom_path: Host-side path to a ``.iso``/``.gcm``/``.dol``/``.elf``.

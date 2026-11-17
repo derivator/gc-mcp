@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ..controllers import pad_state as ps
 from ..instances.dolphin_instance import DolphinInstance
 from .base import Platform
 

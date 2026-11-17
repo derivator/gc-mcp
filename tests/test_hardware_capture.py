@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
 from pathlib import Path
 
 import pytest
 
-import gc_mcp.server as server
+from gc_mcp import server
 from gc_mcp.capture import V4L2Capture, detect_video_devices
 from gc_mcp.capture.v4l2 import (
     _WARMED,
@@ -47,13 +45,13 @@ class TestDetectVideoDevices:
         # A metadata-only node must report can_capture False even though the
         # driver-wide Capabilities line mentions "Video Capture".
         all_out = (
-            "Driver Info:\n"
-            "	Card type        : UGREEN 25773: UGREEN 25773\n"
-            "	Capabilities     : 0x84a00001\n"
-            "		Video Capture\n"
-            "	Device Caps      : 0x04a00000\n"
-            "		Metadata Capture\n"
-        ).encode()
+            b"Driver Info:\n"
+            b"	Card type        : UGREEN 25773: UGREEN 25773\n"
+            b"	Capabilities     : 0x84a00001\n"
+            b"		Video Capture\n"
+            b"	Device Caps      : 0x04a00000\n"
+            b"		Metadata Capture\n"
+        )
         fmt_out = b"ioctl: VIDIOC_ENUM_FMT\n\tType: Video Capture\n"
 
         def fake_run(cmd, **kwargs):
@@ -79,9 +77,9 @@ class TestDetectVideoDevices:
 
     def test_video_capture_node_reports_true(self, monkeypatch):
         all_out = (
-            "	Card type        : HD Pro Webcam C920\n"
-            "	Device Caps      : 0x84a00001\n"
-        ).encode()
+            b"	Card type        : HD Pro Webcam C920\n"
+            b"	Device Caps      : 0x84a00001\n"
+        )
         fmt_out = b"	[0]: 'MJPG' (Motion-JPEG)\n	[1]: 'YUYV' (YUYV 4:2:2)\n"
 
         def fake_run(cmd, **kwargs):
@@ -629,32 +627,32 @@ def hw(monkeypatch, tmp_path):
 
 class TestHardwareTools:
     def test_register_and_list(self, hw):
-        res = server.gc_hardware_register("hw-001", capture_device="/dev/video0")
+        res = server.gc_instance_create_hardware("hw-001", capture_device="/dev/video0")
         assert res["instance_id"] == "hw-001"
-        listing = server.gc_hardware_list()
+        listing = server.gc_instance_list()
         assert listing[0]["instance_id"] == "hw-001"
         assert listing[0]["capture_device"] == "/dev/video0"
 
     def test_status_and_remove(self, hw):
-        server.gc_hardware_register("hw-001")
-        status = server.gc_hardware_status("hw-001")
+        server.gc_instance_create_hardware("hw-001")
+        status = server.gc_instance_status("hw-001")
         assert status["kind"] == "gamecube-hw"
-        removed = server.gc_hardware_remove("hw-001")
+        removed = server.gc_instance_remove("hw-001")
         assert removed["removed"] is True
-        assert server.gc_hardware_list() == []
+        assert server.gc_instance_list() == []
 
     def test_update(self, hw):
-        server.gc_hardware_register("hw-001")
+        server.gc_instance_create_hardware("hw-001")
         res = server.gc_hardware_update("hw-001", serial_devices=["/dev/ttyUSB0"])
         assert res["serial_devices"] == ["/dev/ttyUSB0"]
 
     def test_register_and_list_include_info(self, hw):
-        server.gc_hardware_register("hw-001", info="test rig")
-        listing = server.gc_hardware_list()
+        server.gc_instance_create_hardware("hw-001", info="test rig")
+        listing = server.gc_instance_list()
         assert listing[0]["info"] == "test rig"
 
     def test_platform_list_includes_hardware_info(self, hw):
-        server.gc_hardware_register("hw-001", capture_device="/dev/video0",
+        server.gc_instance_create_hardware("hw-001", capture_device="/dev/video0",
                                     info="test rig")
         platforms = server.gc_platform_list()
         hw_entries = [p for p in platforms if p["kind"] == "gamecube-hw"]
@@ -680,7 +678,7 @@ class TestHardwareTools:
                    for p in dolphin)
 
     def test_platform_list_includes_hardware(self, hw):
-        server.gc_hardware_register("hw-001", capture_device="/dev/video0")
+        server.gc_instance_create_hardware("hw-001", capture_device="/dev/video0")
         platforms = server.gc_platform_list()
         hw_entries = [p for p in platforms if p["kind"] == "gamecube-hw"]
         assert any(p["instance_id"] == "hw-001" for p in hw_entries)
@@ -688,7 +686,7 @@ class TestHardwareTools:
     def test_capture_screenshot_on_hardware(self, hw, monkeypatch, tmp_path):
         device = tmp_path / "video0"
         device.write_bytes(b"\x00")
-        server.gc_hardware_register("hw-001", capture_device=str(device))
+        server.gc_instance_create_hardware("hw-001", capture_device=str(device))
 
         def fake_run(cmd, **kwargs):
             Path(cmd[-1]).write_bytes(b"png")
@@ -700,7 +698,7 @@ class TestHardwareTools:
         assert Path(res["path"]).exists()
 
     def test_capture_configure_tool(self, hw, tmp_path):
-        server.gc_hardware_register("hw-001")
+        server.gc_instance_create_hardware("hw-001")
         res = server.gc_capture_configure("hw-001", width=320, height=240)
         assert res["width"] == 320
         assert res["height"] == 240

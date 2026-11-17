@@ -62,7 +62,7 @@ class HardwareInstanceSpec:
     #: Up to four serial device paths that act as the GameCube controllers.
     serial_devices: list[str] = field(default_factory=list)
     #: The console's own BBA IP, used to reach the Swiss netboot listener for
-    #: ``gc_rom_load`` (e.g. ``192.0.2.10``). None until configured.
+    #: ``gc_instance_start`` (e.g. ``192.0.2.10``). None until configured.
     bba_ip: str | None = None
     #: The netboot listener port on the console (default 4242).
     bba_port: int = DEFAULT_BBA_PORT
@@ -237,6 +237,25 @@ class HardwareInstance:
             "listener never came back up; the console may still be booting or "
             "the combo was not caught"
         )
+
+    def return_to_swiss(self) -> dict[str, Any]:
+        """Return the console to the Swiss menu (exit the currently running game).
+
+        Presses the A+Z+START combo together on port 0 so Swiss's in-game
+        return-to-menu shortcut is triggered. This is the hardware analogue of
+        "stopping" an instance (a real console cannot be powered off over the
+        netboot listener).
+
+        Requires a serial controller on port 0; if none is configured this
+        raises :class:`ControllerError`.
+        """
+        self._return_to_swiss()
+        return {
+            "instance_id": self.spec.instance_id,
+            "kind": "gamecube-hw",
+            "returned_to_swiss": True,
+            "note": "pressed A+Z+START to return to the Swiss menu",
+        }
 
     # ------------------------------------------------------------------
     # Capture backend (built lazily from the spec so configure() stays in sync)

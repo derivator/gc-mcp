@@ -10,10 +10,10 @@ from gc_mcp.config import IPL_REGIONS
 from gc_mcp.errors import ConfigError
 from gc_mcp.instances.config_builder import (
     BBA_MODE_EXI,
-    InstanceConfig,
-    InstanceConfigBuilder,
     SI_DEVICE_GC_CONTROLLER,
     SI_DEVICE_NONE,
+    InstanceConfig,
+    InstanceConfigBuilder,
     normalize_bba_mode,
     normalize_mac,
 )
@@ -177,7 +177,7 @@ class TestConfigBuilder:
 class TestIpl:
     """Tests for GameCube IPL (boot ROM) installation."""
 
-    def _make_ipl_dir(self, tmp_path, regions: tuple[str, ...] = IPL_REGIONS) -> "os.PathLike":
+    def _make_ipl_dir(self, tmp_path, regions: tuple[str, ...] = IPL_REGIONS) -> os.PathLike:
         """Create an IPL folder with a small fake ``<REGION>/IPL.bin`` per region."""
         ipl_dir = tmp_path / "ipl"
         for region in regions:

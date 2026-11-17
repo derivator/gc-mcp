@@ -24,5 +24,8 @@ data/
 captures/
 *.log
 
+# Local ROM paths for the e2e tests (machine-specific, never commit)
+.e2e.env
+
 # OS
 .DS_Store

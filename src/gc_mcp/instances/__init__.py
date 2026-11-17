@@ -15,7 +15,11 @@ from .config_builder import (
     normalize_mac,
 )
 from .dolphin_instance import DolphinInstance, InstanceSpec
-from .hardware_instance import MAX_SERIAL_DEVICES, HardwareInstance, HardwareInstanceSpec
+from .hardware_instance import (
+    MAX_SERIAL_DEVICES,
+    HardwareInstance,
+    HardwareInstanceSpec,
+)
 from .hardware_manager import HardwareManager
 from .manager import InstanceManager
 
@@ -28,15 +32,15 @@ __all__ = [
     "EXI_ETHERNET_XLINK",
     "EXI_MODEM_TAPSERVER",
     "EXI_NONE",
-    "InstanceConfig",
-    "InstanceConfigBuilder",
-    "normalize_bba_mode",
-    "normalize_mac",
-    "DolphinInstance",
-    "InstanceSpec",
     "MAX_SERIAL_DEVICES",
+    "DolphinInstance",
     "HardwareInstance",
     "HardwareInstanceSpec",
     "HardwareManager",
+    "InstanceConfig",
+    "InstanceConfigBuilder",
     "InstanceManager",
+    "InstanceSpec",
+    "normalize_bba_mode",
+    "normalize_mac",
 ]

@@ -5,7 +5,7 @@ from .base import Platform
 from .dolphin import DolphinPlatform
 from .gamecube_hw import GameCubeHWPlatform
 
-__all__ = ["Platform", "DolphinPlatform", "GameCubeHWPlatform"]
+__all__ = ["DolphinPlatform", "GameCubeHWPlatform", "Platform"]
 
 
 def resolve_platform(target: str, manager, hardware=None) -> Platform:

@@ -41,10 +41,11 @@ def validate_rom_path(path: str) -> str:
 
     The path must be a non-empty string starting with ``sdc:/`` or ``fsp:/`` and
     must not contain a ``..`` path component. Returns the stripped path, or
-    raises :class:`ValueError` with a clear reason.
+    raises :class:`TypeError` if ``path`` is not a string and :class:`ValueError`
+    with a clear reason otherwise.
     """
     if not isinstance(path, str):
-        raise ValueError("rom_path must be a string")
+        raise TypeError("rom_path must be a string")
     path = path.strip()
     if not path:
         raise ValueError("rom_path is empty")

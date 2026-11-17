@@ -3,16 +3,15 @@ KeyboardInjector that drives Dolphin hotkeys via xdotool."""
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
-import gc_mcp.server as server
+from gc_mcp import server
 from gc_mcp.keyboard import (
     DEFAULT_HOTKEYS,
-    HOTKEY_FRAME_ADVANCE,
     HOTKEY_DEVICE,
+    HOTKEY_FRAME_ADVANCE,
     HOTKEY_KEY_FRAME_ADVANCE,
     HOTKEY_KEY_TOGGLE_PAUSE,
     HOTKEY_LOAD_STATE_TEMPLATE,

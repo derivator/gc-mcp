@@ -56,14 +56,12 @@ class DolphinPipesController(ControllerBackend):
 
     def _open_writer(self, port: int) -> int:
         path = self._fifo_path(port)
-        last_err: OSError | None = None
         for _ in range(self.open_retries):
             try:
                 return os.open(path, os.O_WRONLY | os.O_NONBLOCK)
             except OSError as exc:
                 if exc.errno == errno.ENXIO:
                     # No reader yet (Dolphin has not opened the read end).
-                    last_err = exc
                     time.sleep(self.retry_delay)
                     continue
                 raise

@@ -33,7 +33,7 @@ from .platform import resolve_platform
 from .platform.dolphin import DolphinPlatform
 from .platform.gamecube_hw import GameCubeHWPlatform
 
-__all__ = ["main", "mcp", "manager", "hardware", "config"]
+__all__ = ["config", "hardware", "main", "manager", "mcp"]
 
 #: Global server state.
 config = ServerConfig()
@@ -71,12 +71,12 @@ def _shutdown_instances() -> None:
     """
     try:
         manager.shutdown()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - cleanup failures must not mask shutdown
         # Never let cleanup failures mask the shutdown path.
         pass
     try:
         hardware.shutdown()
-    except Exception:
+    except Exception:  # noqa: BLE001, S110 - cleanup failures must not mask shutdown
         # Never let cleanup failures mask the shutdown path.
         pass
 
@@ -96,7 +96,7 @@ async def _server_lifespan(app: MCPServer) -> AsyncIterator[None]:
 SERVER_INSTRUCTIONS = (
     "You are controlling GameCube targets. Each instance is either a Dolphin "
     "emulator running headless under Xvfb (``dolphin:<id>``) or a registered "
-    "real GameCube console (``gamecube-hw:<id>``, see gc_hardware_register).\n\n"
+    "real GameCube console (``gamecube-hw:<id>``, see gc_instance_create_hardware).\n\n"
     "Efficiency and latency:\n"
     "- Input actions have real latency (a keystroke/tap reaches the game only on "
     "a later frame). Prefer batching: use gc_controller_sequence to press a run "
@@ -125,12 +125,13 @@ SERVER_INSTRUCTIONS = (
     "- Use gc_log (optionally tail=/grep=) to inspect the instance's Dolphin log "
     "for crashes or ROM console output (OSReport).\n\n"
     "IPL boot:\n"
-    "- gc_instance_start(boot_ipl=True) boots the original GameCube IPL "
-    "(disables 'Skip System Menu'), so the boot logo/menu plays before the "
-    "disc. It only works for a GameCube disc ('.iso'/'.gcm') and only if the "
-    "server has an IPL folder configured (see gc_server_info).\n\n"
+    "- gc_instance_create_emulator(..., boot_ipl=True) creates a Dolphin "
+    "instance that boots the original GameCube IPL (disables 'Skip System "
+    "Menu'), so the boot logo/menu plays before the disc. It only works for a "
+    "GameCube disc ('.iso'/'.gcm') and only if the server has an IPL folder "
+    "configured (see gc_server_info).\n\n"
     "Real GameCube hardware:\n"
-    "- Register a connected console with gc_hardware_register(capture_device=...). "
+    "- Register a connected console with gc_instance_create_hardware(capture_device=...). "
     "Screen capture is implemented via the 'v4l2' backend; ROM loading via "
     "Swiss's netboot listener; controller and memory operations are not yet "
     "supported. gc_capture_screenshot on a hardware instance grabs a frame from "
@@ -141,15 +142,17 @@ SERVER_INSTRUCTIONS = (
     "- The console runs a custom Swiss build with a netboot listener on TCP 4242 "
     "of its own BBA IP. Set that IP with gc_hardware_update(instance_id, "
     "bba_ip='<console-ip>') (it is stored on the hardware instance).\n"
-    "- gc_rom_load(instance_id, rom_path) boots a ROM. For hardware the path must "
-    "be a console-side path starting with 'sdc:/' (SD2SP2) or 'fsp:/' (the "
-    "configured FSP file server), e.g. 'sdc:/games/Foo.iso'.\n"
-    "- If the console is inside a game the netboot listener is down; gc_rom_load "
-    "first tries to return to Swiss with the A+Z+START combo, which needs "
-    "hardware button pressing (not implemented yet), so it raises 'not "
-    "implemented' until then.\n"
-    "- gc_rom_load on a Dolphin instance instead stops and relaunches it booting "
-    "a host-side ROM path.\n"
+    "- gc_instance_start(instance_id, rom_path) boots a ROM. For hardware the "
+    "path must be a console-side path starting with 'sdc:/' (SD2SP2) or 'fsp:/' "
+    "(the configured FSP file server), e.g. 'sdc:/games/Foo.iso'. It stops the "
+    "game currently running (returns to Swiss) and the game may take a while to "
+    "load after the BOOT is accepted.\n"
+    "- If the console is inside a game the netboot listener is down; "
+    "gc_instance_start first tries to return to Swiss with the A+Z+START combo, "
+    "which needs hardware button pressing (not implemented yet), so it raises "
+    "'not implemented' until then.\n"
+    "- gc_instance_start on a Dolphin instance instead stops and relaunches it "
+    "booting a host-side ROM path.\n"
 )
 
 
@@ -273,7 +276,8 @@ def gc_platform_list() -> list[dict]:
                 "kind": "gamecube-hw",
                 "supported": False,
                 "note": "No instances registered. Start a Dolphin instance with "
-                "gc_instance_start or register real hardware with gc_hardware_register.",
+                "gc_instance_start or register real hardware with "
+                "gc_instance_create_hardware.",
             }
         )
     return platforms
@@ -293,7 +297,60 @@ def gc_platform_capabilities(platform: str) -> dict:
 # Instance lifecycle
 # ---------------------------------------------------------------------------
 @mcp.tool()
-def gc_instance_start(
+def gc_instance_start(instance_id: str, rom_path: str) -> dict:
+    """Boot/load a ROM on an instance.
+
+    This is the unified entry point for pointing a target at a game. All
+    per-instance configuration (controller ports, video backend, BBA mode, ...)
+    is set when the instance is **created** with ``gc_instance_create_emulator``
+    (Dolphin) or ``gc_instance_create_hardware`` (real hardware); this tool only
+    boots or reloads a ROM. It dispatches on the kind of instance:
+
+    * **Existing Dolphin instance** — stops the currently-running game (if any)
+      and relaunches the instance booting ``rom_path``, keeping its id, data dir
+      and configuration.
+    * **Real GameCube hardware** — sends a ``BOOT`` command to the console's
+      Swiss netboot listener (TCP 4242 on the instance's ``bba_ip``).
+      ``rom_path`` must be a **console-side** path (``sdc:/`` or ``fsp:/``).
+    * **New instance** — if no instance with ``instance_id`` exists yet, creates
+      and starts a new Dolphin emulator with the server's default configuration
+      booting ``rom_path``. To set custom configuration first, create the
+      instance with ``gc_instance_create_emulator`` and then boot it here.
+
+    .. note::
+       **It stops a game that is currently running.** On a Dolphin instance this
+       stops the current process before relaunching with the new ROM. On real
+       hardware it returns the console to Swiss (exiting the running game) before
+       booting the new ROM.
+
+    .. note::
+       **On real hardware, loading can take a while.** The netboot call returns as
+       soon as Swiss *accepts* the ``BOOT`` command; it does not wait for the game
+       to finish loading. After that the console loads the disc from its own media,
+       which can take anywhere from a few seconds (an SD card) to well over a
+       minute (a slow disc or network path). Poll ``gc_capture_screenshot`` /
+       ``gc_instance_status`` to confirm the game has reached its title screen.
+
+    Args:
+        instance_id: Unique id for the instance.
+        rom_path: Host-side path to a .iso/.gcm/.dol/.elf file for a Dolphin
+            instance, or a **console-side** path (``sdc:/`` or ``fsp:/``) for real
+            GameCube hardware.
+    """
+    # An existing Dolphin instance is relaunched with the new ROM (stopping the
+    # currently-running game first); an existing hardware instance is netbooted.
+    dol = manager.get_or_none(instance_id)
+    if dol is not None:
+        return dol.relaunch(rom_path)
+    hw = hardware.get_or_none(instance_id)
+    if hw is not None:
+        return GameCubeHWPlatform(hw).rom_load(rom_path)
+    # No existing instance -> create a new Dolphin instance with defaults.
+    return manager.start(instance_id, rom_path)
+
+
+@mcp.tool()
+def gc_instance_create_emulator(
     instance_id: str,
     rom_path: str,
     controller_ports: list[int] | None = None,
@@ -309,31 +366,18 @@ def gc_instance_start(
     boot_ipl: bool = False,
     info: str | None = None,
 ) -> dict:
-    """Start a new Dolphin instance booting the given ROM/DOL/ELF.
+    """Create a new Dolphin emulator instance without starting it.
 
-    Args:
-        instance_id: Unique id for the instance.
-        rom_path: Path to a .iso/.gcm/.dol/.elf file.
-        controller_ports: Which GameCube ports (0-3) get a controller (default [0]).
-        bba_mode: Broadband Adapter mode: ipc, hle, xlink, tap, tapserver, modem,
-            or None/empty to disable.
-        bba_mac: MAC address for the BBA (must start with 00:09:bf or 00:17:ab).
-        video_backend: OGL, Vulkan, Null, or Software Renderer.
-        capture_backend: auto, xvfb, or framedump.
-        memory_backend: process_vm or dolphin_engine.
-        internal_resolution: 1x/2x/... internal resolution.
-        native_resolution: GameCube native framebuffer "WxH" (default 640x480).
-        gpu_accel: auto/none/software/vgl/vgl-egl/vgl-glx (default auto).
-        extra_core: Extra Dolphin.ini [Core] overrides.
-        boot_ipl: Boot the original GameCube IPL (disable "Skip System Menu"),
-            so the boot logo/menu runs before the disc. Only meaningful for a
-            GameCube disc ('.iso'/'.gcm'); requires the server to be configured
-            with a GC_MCP_IPL_DIR folder containing <REGION>/IPL.bin files
-            (see gc_server_info). Errors if IPL boot is requested but no IPL
-            folder/files are configured.
-        info: Free-form description/annotation shown in list and status output.
+    The instance is registered (so it appears in ``gc_instance_list`` /
+    ``gc_instance_status``) and its data directory is created, but Dolphin is
+    **not** launched. This lets you pre-register an instance id and configure it
+    (e.g. with ``gc_dolphin_config_set``) before booting it with
+    ``gc_instance_start``.
+
+    ``rom_path`` is a host-side path to a .iso/.gcm/.dol/.elf file. The config
+    arguments are the same as ``gc_instance_start``.
     """
-    return manager.start(
+    return manager.create(
         instance_id,
         rom_path,
         controller_ports=controller_ports,
@@ -352,27 +396,109 @@ def gc_instance_start(
 
 
 @mcp.tool()
+def gc_instance_create_hardware(
+    instance_id: str,
+    capture_device: str | None = None,
+    capture: dict[str, Any] | None = None,
+    serial_devices: list[str] | None = None,
+    bba_ip: str | None = None,
+    bba_port: int | None = None,
+    info: str | None = None,
+) -> dict:
+    """Register a real GameCube hardware instance.
+
+    A hardware instance represents a physical console that stays connected to
+    this host. It is *permanently remembered* (persisted to the server's data
+    dir) until it is explicitly removed with ``gc_instance_remove``.
+
+    Args:
+        instance_id: Unique id for the hardware instance (e.g. ``hw-001``).
+        capture_device: Video4Linux2 device path (default ``/dev/video0``).
+            Prefer a device reported with ``can_capture: true`` by
+            ``gc_hardware_devices``.
+        capture: Optional capture options, e.g. ``{"width": 640, "height": 480,
+            "format": "mjpg", "fps": 30, "flush_frames": 5,
+            "warmup_seconds": 5, "warmup_ttl": 60}``. ``warmup_seconds`` is how
+            long a cold capture card is streamed before grabbing a frame
+            (``0`` disables).
+        serial_devices: Up to four serial device paths that will act as the
+            GameCube controller ports (0-3). Controller driving is not yet
+            implemented, but the devices are remembered.
+        bba_ip: The console's own BBA IP (e.g. ``192.0.2.10``), used by
+            ``gc_instance_start`` to reach the Swiss netboot listener.
+        bba_port: The netboot listener port (default 4242).
+        info: Free-form description/annotation shown in list and status output.
+    """
+    return hardware.register(
+        instance_id,
+        capture_device=capture_device,
+        capture=capture,
+        serial_devices=serial_devices,
+        bba_ip=bba_ip,
+        bba_port=bba_port,
+        info=info,
+    )
+
+
+@mcp.tool()
 def gc_instance_list() -> list[dict]:
-    """List all known instances and their status."""
-    return manager.list()
+    """List all known instances and their status.
+
+    Includes every Dolphin emulator instance (``kind: "dolphin"``) and every
+    registered real GameCube hardware instance (``kind: "gamecube-hw"``).
+    """
+    entries: list[dict] = []
+    for inst in manager.list():
+        entries.append({**inst, "kind": "dolphin"})
+    for hw in hardware.list():
+        entries.append({**hw, "kind": "gamecube-hw"})
+    return entries
 
 
 @mcp.tool()
 def gc_instance_status(instance_id: str) -> dict:
-    """Get detailed status for one instance."""
-    return manager.status(instance_id)
+    """Get detailed status for one instance (Dolphin or real hardware)."""
+    dol = manager.get_or_none(instance_id)
+    if dol is not None:
+        return manager.status(instance_id)
+    hw = hardware.get_or_none(instance_id)
+    if hw is not None:
+        return hardware.status(instance_id)
+    raise NotFoundError(f"unknown instance {instance_id!r}")
 
 
 @mcp.tool()
 def gc_instance_stop(instance_id: str, timeout: float = 5.0) -> dict:
-    """Stop a running Dolphin instance."""
-    return manager.stop(instance_id, timeout=timeout)
+    """Stop a running instance.
+
+    For a Dolphin instance this stops the emulator process. For real GameCube
+    hardware this returns the console to the Swiss menu (exiting the current
+    game) — a real console cannot be powered off over the netboot listener.
+    """
+    dol = manager.get_or_none(instance_id)
+    if dol is not None:
+        return manager.stop(instance_id, timeout=timeout)
+    hw = hardware.get_or_none(instance_id)
+    if hw is not None:
+        return hw.return_to_swiss()
+    raise NotFoundError(f"unknown instance {instance_id!r}")
 
 
 @mcp.tool()
 def gc_instance_remove(instance_id: str) -> dict:
-    """Stop and delete an instance and its data directory."""
-    return manager.remove(instance_id)
+    """Stop and delete an instance.
+
+    For a Dolphin instance this stops the emulator and deletes its data
+    directory. For real GameCube hardware this forgets the registered console
+    (and any capture handles); the console itself is not affected.
+    """
+    dol = manager.get_or_none(instance_id)
+    if dol is not None:
+        return manager.remove(instance_id)
+    hw = hardware.get_or_none(instance_id)
+    if hw is not None:
+        return hardware.remove(instance_id)
+    raise NotFoundError(f"unknown instance {instance_id!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -393,51 +519,6 @@ def gc_hardware_devices() -> list[dict]:
 
 
 @mcp.tool()
-def gc_hardware_register(
-    instance_id: str,
-    capture_device: str | None = None,
-    capture: dict[str, Any] | None = None,
-    serial_devices: list[str] | None = None,
-    bba_ip: str | None = None,
-    bba_port: int | None = None,
-    info: str | None = None,
-) -> dict:
-    """Register a real GameCube hardware instance.
-
-    A hardware instance represents a physical console that stays connected to
-    this host. It is *permanently remembered* (persisted to the server's data
-    dir) until it is explicitly removed with ``gc_hardware_remove``.
-
-    Args:
-        instance_id: Unique id for the hardware instance (e.g. ``hw-001``).
-        capture_device: Video4Linux2 device path (default ``/dev/video0``).
-            Prefer a device reported with ``can_capture: true`` by
-            ``gc_hardware_devices``.
-        capture: Optional capture options, e.g. ``{"width": 640, "height": 480,
-            "format": "mjpg", "fps": 30, "flush_frames": 5,
-            "warmup_seconds": 5, "warmup_ttl": 60}``. ``warmup_seconds`` is how
-            long a cold capture card is streamed before grabbing a frame
-            (``0`` disables).
-        serial_devices: Up to four serial device paths that will act as the
-            GameCube controller ports (0-3). Controller driving is not yet
-            implemented, but the devices are remembered.
-        bba_ip: The console's own BBA IP (e.g. ``192.0.2.10``), used by
-            ``gc_rom_load`` to reach the Swiss netboot listener.
-        bba_port: The netboot listener port (default 4242).
-        info: Free-form description/annotation shown in list and status output.
-    """
-    return hardware.register(
-        instance_id,
-        capture_device=capture_device,
-        capture=capture,
-        serial_devices=serial_devices,
-        bba_ip=bba_ip,
-        bba_port=bba_port,
-        info=info,
-    )
-
-
-@mcp.tool()
 def gc_hardware_update(
     instance_id: str,
     capture_device: str | None = None,
@@ -449,9 +530,9 @@ def gc_hardware_update(
 ) -> dict:
     """Update a registered hardware instance's settings and persist them.
 
-    Use this to set the console's ``bba_ip`` (its own IP) so ``gc_rom_load`` can
-    reach the Swiss netboot listener, or to change the capture device / ports /
-    ``info`` annotation.
+    Use this to set the console's ``bba_ip`` (its own IP) so ``gc_instance_start``
+    can reach the Swiss netboot listener, or to change the capture device / ports
+    / ``info`` annotation.
     """
     return hardware.update(
         instance_id,
@@ -462,28 +543,6 @@ def gc_hardware_update(
         bba_port=bba_port,
         info=info,
     )
-
-
-@mcp.tool()
-def gc_hardware_list() -> list[dict]:
-    """List all registered real GameCube hardware instances."""
-    return hardware.list()
-
-
-@mcp.tool()
-def gc_hardware_status(instance_id: str) -> dict:
-    """Get detailed status for one hardware instance."""
-    return hardware.status(instance_id)
-
-
-@mcp.tool()
-def gc_hardware_remove(instance_id: str) -> dict:
-    """Forget a registered hardware instance.
-
-    This removes the instance from the persistent registry so it is no longer
-    remembered across server restarts. Use ``gc_hardware_register`` to re-add it.
-    """
-    return hardware.remove(instance_id)
 
 
 @mcp.tool()
@@ -564,36 +623,6 @@ def gc_capture_screenshot(instance_id: str, filename: str | None = None,
         result["data_base64"] = base64.b64encode(path.read_bytes()).decode("ascii")
         result["mime_type"] = "image/png"
     return result
-
-
-# ---------------------------------------------------------------------------
-# ROM loading
-# ---------------------------------------------------------------------------
-@mcp.tool()
-def gc_rom_load(instance_id: str, rom_path: str) -> dict:
-    """Boot/load a ROM on an instance.
-
-    This is the unified entry point for pointing a target at a game:
-
-    * **Real GameCube hardware** — sends a ``BOOT`` command to the console's
-      Swiss netboot listener (TCP 4242 on the instance's ``bba_ip``). ``rom_path``
-      must be a **console-side** path (``sdc:/`` or ``fsp:/``, e.g.
-      ``sdc:/games/Foo.iso``). If the console is currently inside a game the
-      listener is down; this first tries to return to Swiss with the A+Z+START
-      combo (which needs hardware button pressing, not implemented yet).
-
-      Raises :class:`NetbootError` if the ``BOOT`` command is not answered with
-      ``OK`` — including when the listener returns *no reply* at all (console
-      mid-boot / dropped connection) or refuses the ROM (``ERR <reason>``).
-
-    * **Dolphin instance** — stops the current process and relaunches it booting
-      the given **host-side** ROM/DOL/ELF path.
-
-    For hardware, set the console's IP with ``gc_hardware_update(instance_id,
-    bba_ip='<console-ip>')`` before loading a ROM.
-    """
-    inst = _instance(instance_id)
-    return inst.rom_load(rom_path)
 
 
 # ---------------------------------------------------------------------------
@@ -895,7 +924,6 @@ def gc_dolphin_config_get(instance_id: str, section: str, key: str) -> dict:
 
     This is Dolphin-only (real hardware has no such config).
     """
-    from .instances.config_builder import InstanceConfig
 
     inst = _instance(instance_id)
     ini = inst.instance.spec.user_dir / "Config" / "Dolphin.ini"

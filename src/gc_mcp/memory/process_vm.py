@@ -15,7 +15,6 @@ the ``process_vm_*`` syscalls.
 from __future__ import annotations
 
 import ctypes
-import errno
 import os
 import threading
 from pathlib import Path
@@ -84,14 +83,6 @@ def _parse_maps(pid: int) -> dict:
     maps_path = Path(f"/proc/{pid}/maps")
     if not maps_path.exists():
         raise MemoryError(f"process {pid} is not running")
-
-    result = {
-        "mem1": 0,
-        "aram": 0,
-        "mem2": 0,
-        "mem2_present": False,
-        "aram_accessible": False,
-    }
 
     try:
         lines = maps_path.read_text().splitlines()

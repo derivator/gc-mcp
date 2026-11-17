@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-import os
 import textwrap
-import time
 
 import pytest
 
 from gc_mcp.config import ServerConfig
-from gc_mcp.errors import NotFoundError, StartupError
+from gc_mcp.errors import AlreadyExistsError, NotFoundError, StartupError
 from gc_mcp.instances.manager import InstanceManager
 
 
@@ -95,6 +93,37 @@ def test_start_sets_info(tmp_path, fake_dolphin):
     try:
         assert status["info"] == "dev rig"
         assert manager.list()[0]["info"] == "dev rig"
+    finally:
+        manager.shutdown()
+
+
+def test_create_registers_without_starting(tmp_path, fake_dolphin):
+    # gc_instance_create_emulator / manager.create() registers an instance and
+    # creates its data dir, but must NOT launch Dolphin (no subprocess / no
+    # running flag). Only a later gc_instance_start boots it.
+    rom = tmp_path / "game.iso"
+    rom.write_bytes(b"\x00" * 1024)
+
+    cfg = make_config(tmp_path, fake_dolphin)
+    manager = InstanceManager(cfg)
+
+    status = manager.create("test1", rom, info="pre-registered", capture_backend="framedump")
+    try:
+        assert status["running"] is False
+        assert status["pid"] is None
+        assert status["info"] == "pre-registered"
+
+        # Registered (shows up in list/status) and data dir exists.
+        assert manager.list()[0]["instance_id"] == "test1"
+        assert manager.status("test1")["running"] is False
+        assert (cfg.instances_dir / "test1").exists()
+
+        # No Dolphin subprocess was spawned: the invocation log was never written.
+        assert not (tmp_path / "invocation.txt").exists()
+
+        # A second create with the same id is rejected.
+        with pytest.raises(AlreadyExistsError):
+            manager.create("test1", rom)
     finally:
         manager.shutdown()
 

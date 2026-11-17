@@ -38,7 +38,7 @@ class DolphinEngineMemory(MemoryBackend):
         if not _dme.is_hooked():
             try:
                 _dme.hook()
-            except Exception:  # pragma: no cover
+            except Exception:  # noqa: BLE001 - a hook failure means "not ready"
                 return False
         return _dme.is_hooked()
 

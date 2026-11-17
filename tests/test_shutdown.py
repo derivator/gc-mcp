@@ -9,8 +9,6 @@ import sys
 import textwrap
 from pathlib import Path
 
-import pytest
-
 from gc_mcp import server
 from gc_mcp.instances.manager import InstanceManager
 
@@ -194,6 +192,7 @@ def test_signal_handler_in_subprocess_stops_instances(tmp_path):
         cwd=root,
         env={**os.environ, "PYTHONPATH": root},
         timeout=30,
+        check=False,
     )
     # The process is terminated by SIGTERM (default action), so returncode != 0.
     assert proc.returncode != 0

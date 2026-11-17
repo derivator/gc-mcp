@@ -56,7 +56,7 @@ class TestValidateRomPath:
             nb.validate_rom_path("")
 
     def test_rejects_non_string(self):
-        with pytest.raises(ValueError):
+        with pytest.raises(TypeError):
             nb.validate_rom_path(123)
 
     def test_rejects_bad_prefix(self):

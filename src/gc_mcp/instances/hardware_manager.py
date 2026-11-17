@@ -3,7 +3,7 @@
 Hardware instances are *permanently remembered*: they are persisted to
 ``<data>/hardware.json`` so that a server restart does not forget a connected
 console. They are only forgotten when explicitly removed via
-:meth:`HardwareManager.remove` (exposed as ``gc_hardware_remove``).
+:meth:`HardwareManager.remove` (exposed as ``gc_instance_remove``).
 
 A hardware instance has no subprocess to manage (unlike a Dolphin instance), so
 this manager is mostly about registration, validation, persistence and routing
@@ -20,7 +20,12 @@ from typing import Any
 
 from ..config import ServerConfig
 from ..errors import AlreadyExistsError, NotFoundError
-from .hardware_instance import MAX_SERIAL_DEVICES, HardwareInstance, HardwareInstanceSpec, _now
+from .hardware_instance import (
+    MAX_SERIAL_DEVICES,
+    HardwareInstance,
+    HardwareInstanceSpec,
+    _now,
+)
 
 #: A sane instance id (shared with the Dolphin manager).
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")

@@ -56,7 +56,7 @@ class GameCubeHWPlatform(Platform):
                 "hardware_id": self.hardware_id,
                 "registered": False,
                 "note": "No real GameCube hardware instance is registered with "
-                "this id. Use gc_hardware_register to create one.",
+                "this id. Use gc_instance_create_hardware to create one.",
             }
         status = self.instance.status()
         status["registered"] = True

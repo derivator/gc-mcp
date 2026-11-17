@@ -6,7 +6,7 @@ import textwrap
 
 import pytest
 
-import gc_mcp.server as server
+from gc_mcp import server
 from gc_mcp.config import ServerConfig
 from gc_mcp.errors import ControllerError, NetbootError, NotFoundError
 from gc_mcp.instances import (
@@ -312,39 +312,57 @@ def hw(monkeypatch, tmp_path):
 
 class TestHardwareRomLoadTools:
     def test_register_with_bba_ip(self, hw):
-        res = server.gc_hardware_register("hw-001", bba_ip="192.0.2.10")
+        res = server.gc_instance_create_hardware("hw-001", bba_ip="192.0.2.10")
         assert res["bba_ip"] == "192.0.2.10"
         assert res["bba_port"] == 4242
 
     def test_update_bba_ip(self, hw):
-        server.gc_hardware_register("hw-001")
+        server.gc_instance_create_hardware("hw-001")
         res = server.gc_hardware_update("hw-001", bba_ip="192.0.2.10")
         assert res["bba_ip"] == "192.0.2.10"
 
     def test_platform_list_surfaces_bba(self, hw):
-        server.gc_hardware_register("hw-001", bba_ip="192.0.2.10")
+        server.gc_instance_create_hardware("hw-001", bba_ip="192.0.2.10")
         platforms = server.gc_platform_list()
         entry = next(p for p in platforms if p["kind"] == "gamecube-hw")
         assert entry["bba_ip"] == "192.0.2.10"
         assert entry["bba_port"] == 4242
 
     def test_rom_load_tool_on_hardware(self, hw, monkeypatch):
-        server.gc_hardware_register("hw-001", bba_ip="192.0.2.10")
+        server.gc_instance_create_hardware("hw-001", bba_ip="192.0.2.10")
         inst = hw.get("hw-001")
         fake = _patch_netboot(monkeypatch, inst, reachable=True, status="READY",
                               boot_reply="OK")
-        res = server.gc_rom_load("hw-001", "sdc:/games/Foo.iso")
+        res = server.gc_instance_start("hw-001", "sdc:/games/Foo.iso")
         assert res["booted"] is True
         assert fake.boot_calls == ["sdc:/games/Foo.iso"]
 
     def test_rom_load_tool_missing_bba_ip(self, hw):
-        server.gc_hardware_register("hw-001")
+        server.gc_instance_create_hardware("hw-001")
         with pytest.raises(NetbootError):
-            server.gc_rom_load("hw-001", "sdc:/games/Foo.iso")
+            server.gc_instance_start("hw-001", "sdc:/games/Foo.iso")
+
+    def test_instance_stop_on_hardware_returns_to_swiss(self, hw):
+        # gc_instance_stop on a hardware instance returns the console to the
+        # Swiss menu by pressing A+Z+START (a real console cannot be powered off
+        # over the netboot listener).
+        server.gc_instance_create_hardware("hw-001")
+        inst = hw.get("hw-001")
+        fake = FakeController()
+        inst._controller = fake
+        res = server.gc_instance_stop("hw-001")
+        assert res["returned_to_swiss"] is True
+        assert res["kind"] == "gamecube-hw"
+        presses = [c for c in fake.calls if c[0] == "press"]
+        assert presses == [("press", 0, "A"), ("press", 0, "Z"), ("press", 0, "START")]
+
+    def test_instance_stop_unknown_raises(self, hw):
+        with pytest.raises(NotFoundError):
+            server.gc_instance_stop("nope")
 
 
 # ---------------------------------------------------------------------------
-# Dolphin relaunch (unified gc_rom_load on a Dolphin instance)
+# Dolphin relaunch (unified gc_instance_start on a Dolphin instance)
 # ---------------------------------------------------------------------------
 @pytest.fixture
 def fake_dolphin(tmp_path):
@@ -427,5 +445,28 @@ class TestDolphinRelaunch:
             result = plat.rom_load(str(rom2))
             assert result["running"] is True
             assert inst.spec.rom_path == rom2
+        finally:
+            manager.shutdown()
+
+    def test_instance_start_on_existing_dolphin_relaunches(self, tmp_path,
+                                                           fake_dolphin, monkeypatch):
+        # The unified gc_instance_start tool, when given an id that already
+        # exists as a Dolphin instance, stops the running game and relaunches it
+        # with the new ROM (it does not create a second instance).
+        rom1 = tmp_path / "game1.iso"
+        rom1.write_bytes(b"\x00" * 1024)
+        rom2 = tmp_path / "game2.iso"
+        rom2.write_bytes(b"\x00" * 1024)
+        cfg = make_dolphin_config(tmp_path, fake_dolphin)
+        manager = InstanceManager(cfg)
+        manager.start("test1", rom1, capture_backend="framedump")
+        monkeypatch.setattr(server, "manager", manager)
+        try:
+            res = server.gc_instance_start("test1", str(rom2))
+            inst = manager.get("test1")
+            assert res["running"] is True
+            assert inst.spec.rom_path == rom2
+            # Still exactly one instance (it was relaunched, not re-created).
+            assert len(manager) == 1
         finally:
             manager.shutdown()

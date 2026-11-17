@@ -6,7 +6,7 @@ import struct
 
 import pytest
 
-import gc_mcp.server as server
+from gc_mcp import server
 
 
 class FakeMemory:

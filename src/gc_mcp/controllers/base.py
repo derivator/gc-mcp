@@ -14,7 +14,6 @@ import time
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
 
 from ..errors import SequenceError
 from . import pad_state as ps
@@ -66,7 +65,7 @@ def parse_step(raw: dict) -> InputStep:
 class SequenceRunner:
     """Runs an ordered list of InputSteps on a background thread."""
 
-    def __init__(self, backend: "ControllerBackend", port: int, steps: list[InputStep],
+    def __init__(self, backend: ControllerBackend, port: int, steps: list[InputStep],
                  loop: bool = False) -> None:
         self.backend = backend
         self.port = port
@@ -96,16 +95,15 @@ class SequenceRunner:
                         return
                     target = start + (step.t / 1000.0)
                     delay = target - time.monotonic()
-                    if delay > 0:
-                        if self._stop.wait(delay):
-                            return
+                    if delay > 0 and self._stop.wait(delay):
+                        return
                     if self._stop.is_set():
                         return
                     self.backend.apply_step(self.port, step)
                 if not self.loop:
                     return
                 start = time.monotonic()
-        except Exception as exc:  # pragma: no cover - defensive
+        except Exception as exc:  # noqa: BLE001 - defensive safety net
             self.backend._sequence_failed(self.port, exc)
 
 

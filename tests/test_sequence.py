@@ -6,7 +6,12 @@ import time
 
 import pytest
 
-from gc_mcp.controllers.base import ControllerBackend, InputStep, SequenceRunner, parse_step
+from gc_mcp.controllers.base import (
+    ControllerBackend,
+    InputStep,
+    SequenceRunner,
+    parse_step,
+)
 from gc_mcp.controllers.pad_state import PadState
 from gc_mcp.errors import SequenceError
 

@@ -7,6 +7,7 @@ is gone (not orphaned).
 
 Run manually:
     GC_MCP_TEST_ROM=/path/to/rom.gcm .venv/bin/python tests/test_shutdown_e2e.py
+    # or put GC_MCP_TEST_ROM=/path/to/rom.gcm in the git-ignored .e2e.env file.
 """
 
 from __future__ import annotations
@@ -14,24 +15,19 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
-import sys
-import time
 from pathlib import Path
 
+import e2e_config
 from mcp import ClientSession
-from mcp.client.stdio import stdio_client, StdioServerParameters
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / ".venv" / "bin" / "gc-mcp"
 FZERO = "fzero"
 
-#: Path to a GameCube ROM to boot. Override via the ``GC_MCP_TEST_ROM`` env var.
-ROM = os.environ.get("GC_MCP_TEST_ROM", "")
-if not ROM:
-    raise SystemExit(
-        "Set GC_MCP_TEST_ROM to the path of a GameCube ROM (e.g. a .gcm/.iso) "
-        "to run this e2e test."
-    )
+#: Path to a GameCube ROM to boot. Set via the ``GC_MCP_TEST_ROM`` env var or
+#: the git-ignored ``.e2e.env`` file.
+ROM = e2e_config.resolve("GC_MCP_TEST_ROM")
 
 
 def _procs() -> dict[int, dict]:
@@ -64,12 +60,19 @@ def _servers(procs: dict[int, dict], mypid: int) -> list[int]:
 
 
 async def main() -> int:
+    if not ROM:
+        print(
+            "Set GC_MCP_TEST_ROM to the path of a GameCube ROM (e.g. a .gcm/.iso), "
+            "or put GC_MCP_TEST_ROM=<path> in the git-ignored .e2e.env file, to "
+            "run this e2e test."
+        )
+        return 1
     params = StdioServerParameters(command=str(SERVER), cwd=str(ROOT))
 
     before = set(_dolphins(_procs()))
     print(f"[before] dolphins: {sorted(before)}")
 
-    async with stdio_client(params) as (read, write):
+    async with stdio_client(params) as (read, write):  # noqa: SIM117
         async with ClientSession(read, write) as session:
             await session.initialize()
 

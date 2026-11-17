@@ -90,19 +90,19 @@ permanently** (persisted to `<data>/hardware.json`) until removed:
 
 ```bash
 gc_hardware_devices            # probe /dev/video* and report capture capability
-gc_hardware_register("hw-001", capture_device="/dev/video0")
+gc_instance_create_hardware("hw-001", capture_device="/dev/video0")
 gc_capture_screenshot("hw-001")   # grab a frame -> PNG
 gc_hardware_update("hw-001", serial_devices=["/dev/ttyUSB0", ...])
-gc_hardware_status("hw-001")
-gc_hardware_remove("hw-001")
+gc_instance_status("hw-001")
+gc_instance_remove("hw-001")
 ```
 
 Every hardware instance carries a free-form `info` annotation (default `""`)
-that you can set with `gc_hardware_register(..., info=...)` or
+that you can set with `gc_instance_create_hardware(..., info=...)` or
 `gc_hardware_update("hw-001", info=...)`. It is persisted and shown in
-`gc_hardware_list`, `gc_hardware_status`, and `gc_platform_list` — handy for
+`gc_instance_list`, `gc_instance_status`, and `gc_platform_list` — handy for
 labelling a console ("living-room rig", "capture is the UGREEN card"). Dolphin
-instances take `info` at launch via `gc_instance_start(..., info=...)`.
+instances take `info` at creation via `gc_instance_create_emulator(..., info=...)`.
 
 `gc_hardware_devices` probes each node with `v4l2-ctl` and reports its card
 name, the pixel formats it exposes, and whether it can actually **capture video
@@ -133,19 +133,30 @@ FSP file server):
 
 ```bash
 gc_hardware_update("hw-001", bba_ip="192.0.2.10")   # remember the console's IP
-gc_rom_load("hw-001", "sdc:/games/Foo.iso")           # boot the game
+gc_instance_start("hw-001", "sdc:/games/Foo.iso")    # boot the game
 ```
 
-`gc_rom_load` is the **unified** entry point across targets:
+`gc_instance_start` is the **unified** entry point across targets:
 
 * **Real hardware** — sends `BOOT` to the netboot listener. Set `bba_ip` with
-  `gc_hardware_register(..., bba_ip=...)` or `gc_hardware_update(...)`; it is
-  persisted on the hardware instance. If the console is currently **inside a
-  game** the listener is down, so `gc_rom_load` first tries to return to Swiss
-  with the A+Z+START combo — which needs hardware button pressing and is **not
-  implemented yet** (it raises "not implemented" until then).
+  `gc_instance_create_hardware(..., bba_ip=...)` or `gc_hardware_update(...)`;
+  it is persisted on the hardware instance. If the console is currently
+  **inside a game** the listener is down, so `gc_instance_start` first tries to
+  return to Swiss with the A+Z+START combo — which needs hardware button
+  pressing and is **not implemented yet** (it raises "not implemented" until
+  then).
 * **Dolphin instance** — stops the current process and relaunches it booting a
   **host-side** ROM/DOL/ELF path, keeping the instance id and config.
+* **New instance** — creates and starts a fresh Dolphin emulator booting the
+  given host-side ROM path, using the server's default configuration. To set
+  custom configuration, create the instance first with
+  `gc_instance_create_emulator(..., config...)` and then boot it here.
+
+`gc_instance_start` **stops a game that is currently running** before booting
+the new ROM, and on real hardware the boot is accepted by Swiss long before the
+game finishes loading — so it can take from a few seconds (an SD card) to well
+over a minute to reach the title screen. Poll `gc_capture_screenshot` /
+`gc_instance_status` to confirm.
 
 The netboot protocol is one command per TCP connection (`PING`→`PONG`,
 `STATUS`→`READY`/`BUSY`, `BOOT <path>`→`OK`/`ERR <reason>`).
@@ -203,9 +214,9 @@ shape for a headless container.
 All tools take an `instance_id` where relevant.
 
 - `gc_platform_list`, `gc_platform_capabilities`
-- `gc_instance_start`, `gc_instance_list`, `gc_instance_status`, `gc_instance_stop`, `gc_instance_remove`
+- `gc_instance_start`, `gc_instance_create_emulator`, `gc_instance_create_hardware`, `gc_instance_list`, `gc_instance_status`, `gc_instance_stop`, `gc_instance_remove`
 - `gc_capture_backends`, `gc_capture_configure`, `gc_capture_screenshot`
-- `gc_hardware_devices`, `gc_hardware_register`, `gc_hardware_update`, `gc_hardware_list`, `gc_hardware_status`, `gc_hardware_remove`
+- `gc_hardware_devices`, `gc_hardware_update`
 - `gc_controller_press`, `gc_controller_release`, `gc_controller_set_stick`, `gc_controller_set_trigger`, `gc_controller_sequence`, `gc_controller_sequence_cancel`, `gc_controller_get_state`, `gc_controller_reset`
 - `gc_memory_read`, `gc_memory_write`
 - `gc_dolphin_config_get`, `gc_dolphin_config_set`, `gc_dolphin_config_apply_profile`

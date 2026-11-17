@@ -219,9 +219,10 @@ class ServerConfig:
     #: How long a warmed device is trusted before it must be warmed again (s).
     hw_capture_warmup_ttl: float = field(default_factory=lambda: _env_float("GC_MCP_HW_CAPTURE_WARMUP_TTL", 60.0))
     #: Default BBA IP for a hardware instance (the console's own IP, used to reach
-    #: the Swiss netboot listener for ``gc_rom_load``). Empty/None means a new
-    #: hardware instance must be given an IP explicitly via ``gc_hardware_register``
-    #: or ``gc_hardware_update`` before ROM loading works.
+    #: the Swiss netboot listener for ``gc_instance_start``). Empty/None means a
+    #: new hardware instance must be given an IP explicitly via
+    #: ``gc_instance_create_hardware`` or ``gc_hardware_update`` before ROM
+    #: loading works.
     hw_bba_ip: str | None = field(default_factory=lambda: _env_str("GC_MCP_HW_BBA_IP", "") or None)
     #: Default netboot listener port (Swiss listens on TCP 4242).
     hw_bba_port: int = field(default_factory=lambda: _env_int("GC_MCP_HW_BBA_PORT", 4242))

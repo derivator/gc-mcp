@@ -75,7 +75,7 @@ def detect_video_devices() -> list[dict[str, Any]]:
         # Card name + whether the node itself supports Video Capture.
         try:
             all_res = subprocess.run(
-                [ctl, "-d", node, "--all"], capture_output=True, timeout=10
+                [ctl, "-d", node, "--all"], capture_output=True, timeout=10, check=False
             )
             text = all_res.stdout.decode("utf-8", "replace")
             entry["name"] = _parse_card_type(text)
@@ -88,7 +88,7 @@ def detect_video_devices() -> list[dict[str, Any]]:
         # Enumerate the pixel formats; an empty list means no video stream.
         try:
             fmt_res = subprocess.run(
-                [ctl, "-d", node, "--list-formats"], capture_output=True, timeout=10
+                [ctl, "-d", node, "--list-formats"], capture_output=True, timeout=10, check=False
             )
             entry["formats"] = _parse_formats(fmt_res.stdout.decode("utf-8", "replace"))
             if entry["formats"]:
@@ -189,7 +189,7 @@ class V4L2Capture(CaptureBackend):
 
     def _run(self, cmd: list[str], timeout: int = 30) -> subprocess.CompletedProcess:
         try:
-            return subprocess.run(cmd, capture_output=True, timeout=timeout)
+            return subprocess.run(cmd, capture_output=True, timeout=timeout, check=False)
         except FileNotFoundError as exc:
             raise CaptureError(f"required capture tool not found: {cmd[0]}") from exc
         except subprocess.TimeoutExpired as exc:
