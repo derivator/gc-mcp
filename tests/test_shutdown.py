@@ -75,8 +75,28 @@ def test_shutdown_instances_survives_exceptions(monkeypatch):
     assert b.stopped == 1
 
 
-def test_server_lifespan_calls_shutdown_on_exit(monkeypatch):
-    """Exiting the lifespan context manager must stop all instances."""
+def test_shutdown_instances_releases_hardware(monkeypatch):
+    """_shutdown_instances() must also shut down the hardware manager so any
+    real GameCube controller serial devices are reset/closed."""
+    mgr = InstanceManager(server.config)
+    mgr._instances.clear()
+    monkeypatch.setattr(server, "manager", mgr)
+
+    class FakeHardware:
+        def __init__(self) -> None:
+            self.shutdown_calls = 0
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+
+    hw = FakeHardware()
+    monkeypatch.setattr(server, "hardware", hw)
+    server._shutdown_instances()
+    assert hw.shutdown_calls == 1
+
+
+def test_server_lifespan_calls_startup_and_shutdown_on_exit(monkeypatch):
+    """Entering the lifespan must verify hardware serials; exiting must stop all."""
     import anyio
 
     mgr = InstanceManager(server.config)
@@ -84,11 +104,29 @@ def test_server_lifespan_calls_shutdown_on_exit(monkeypatch):
     mgr._instances["a"] = a  # type: ignore[attr-defined]
     monkeypatch.setattr(server, "manager", mgr)
 
+    class FakeHardware:
+        def __init__(self) -> None:
+            self.startup_calls = 0
+            self.shutdown_calls = 0
+
+        def startup(self) -> dict:
+            self.startup_calls += 1
+            return {}
+
+        def shutdown(self) -> None:
+            self.shutdown_calls += 1
+
+    hw = FakeHardware()
+    monkeypatch.setattr(server, "hardware", hw)
+
     async def run() -> None:
         async with server._server_lifespan(server.mcp):
-            # The server is "running" while the body executes.
+            # On entry the startup probe must have run; server is "running".
+            assert hw.startup_calls == 1
             assert len(mgr._instances) == 1
-        # After the context exits, shutdown must have stopped the instance.
+        # After the context exits, shutdown must have stopped the instance and
+        # released hardware.
+        assert hw.shutdown_calls == 1
         assert a.stopped == 1
         assert len(mgr._instances) == 0
 

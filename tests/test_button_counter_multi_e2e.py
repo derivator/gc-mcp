@@ -24,13 +24,14 @@ What we verify:
      counter, leaving B untouched.
 
 Run manually:
-    .venv/bin/python tests/test_button_counter_multi_e2e.py
+    GC_MCP_BUTTON_COUNTER_ROM=/path/to/button-counter.dol .venv/bin/python tests/test_button_counter_multi_e2e.py
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -40,7 +41,14 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / ".venv" / "bin" / "gc-mcp"
-ROM = "/home/coder/gc-button-counter/gc-button-counter-gamecube.dol"
+
+#: Path to the button-counter ROM. Override via the ``GC_MCP_BUTTON_COUNTER_ROM`` env var.
+ROM = os.environ.get("GC_MCP_BUTTON_COUNTER_ROM", "")
+if not ROM:
+    raise SystemExit(
+        "Set GC_MCP_BUTTON_COUNTER_ROM to the path of the button-counter "
+        "GameCube .dol to run this e2e test."
+    )
 
 #: A press line: ``Controller 1: A pressed (total N)``. Capture the running total.
 _PRESS_RE = re.compile(r"Controller \d+: .+ pressed \(total (\d+)\)")

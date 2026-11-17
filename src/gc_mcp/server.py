@@ -42,16 +42,40 @@ manager = InstanceManager(config)
 hardware = HardwareManager(config)
 
 
+def _startup_instances() -> None:
+    """Verify the controller serial devices of registered GameCube hardware.
+
+    Called when the server's lifespan starts (i.e. when the stdio connection
+    opens and the MCP server comes up). Each hardware instance with serial
+    devices is probed with the firmware ``ID`` command so a dead or wrong device
+    is caught early, and its buttons are reset so nothing is left held.
+    """
+    try:
+        hardware.startup()
+    except Exception:  # noqa: BLE001, S110 - a startup probe failure must not stop the server coming up
+        # Never let a startup probe failure prevent the server coming up.
+        pass
+
+
 def _shutdown_instances() -> None:
-    """Best-effort stop of every running Dolphin subprocess.
+    """Best-effort stop of every running Dolphin subprocess and release of any
+    real GameCube hardware controller resources.
 
     Called from the server's lifespan ``__aexit__`` (i.e. when the stdio
     connection closes and the MCP server is asked to shut down), from a
     SIGTERM/SIGINT handler, and from ``atexit`` as a last resort. ``shutdown()``
     is idempotent, so calling it more than once is safe.
+
+    For hardware instances this releases the controller backends, which resets
+    any held buttons on the serial devices before closing them.
     """
     try:
         manager.shutdown()
+    except Exception:
+        # Never let cleanup failures mask the shutdown path.
+        pass
+    try:
+        hardware.shutdown()
     except Exception:
         # Never let cleanup failures mask the shutdown path.
         pass
@@ -59,7 +83,8 @@ def _shutdown_instances() -> None:
 
 @asynccontextmanager
 async def _server_lifespan(app: MCPServer) -> AsyncIterator[None]:
-    """Server lifespan: stop all Dolphin subprocesses on exit."""
+    """Server lifespan: verify hardware serials on start, stop everything on exit."""
+    _startup_instances()
     try:
         yield
     finally:
@@ -222,6 +247,7 @@ def gc_platform_list() -> list[dict]:
                 "platform": f"dolphin:{inst['instance_id']}",
                 "kind": "dolphin",
                 "instance_id": inst["instance_id"],
+                "info": inst.get("info", ""),
                 "running": inst["running"],
                 "pid": inst["pid"],
             }
@@ -232,6 +258,7 @@ def gc_platform_list() -> list[dict]:
                 "platform": f"gamecube-hw:{hw['instance_id']}",
                 "kind": "gamecube-hw",
                 "instance_id": hw["instance_id"],
+                "info": hw.get("info", ""),
                 "capture_device": hw["capture_device"],
                 "capture_ready": hw["capture_ready"],
                 "serial_devices": hw["serial_devices"],
@@ -280,6 +307,7 @@ def gc_instance_start(
     gpu_accel: str | None = None,
     extra_core: dict[str, str] | None = None,
     boot_ipl: bool = False,
+    info: str | None = None,
 ) -> dict:
     """Start a new Dolphin instance booting the given ROM/DOL/ELF.
 
@@ -303,6 +331,7 @@ def gc_instance_start(
             with a GC_MCP_IPL_DIR folder containing <REGION>/IPL.bin files
             (see gc_server_info). Errors if IPL boot is requested but no IPL
             folder/files are configured.
+        info: Free-form description/annotation shown in list and status output.
     """
     return manager.start(
         instance_id,
@@ -318,6 +347,7 @@ def gc_instance_start(
         gpu_accel=gpu_accel,
         extra_core=extra_core,
         boot_ipl=boot_ipl,
+        info=info,
     )
 
 
@@ -370,6 +400,7 @@ def gc_hardware_register(
     serial_devices: list[str] | None = None,
     bba_ip: str | None = None,
     bba_port: int | None = None,
+    info: str | None = None,
 ) -> dict:
     """Register a real GameCube hardware instance.
 
@@ -390,9 +421,10 @@ def gc_hardware_register(
         serial_devices: Up to four serial device paths that will act as the
             GameCube controller ports (0-3). Controller driving is not yet
             implemented, but the devices are remembered.
-        bba_ip: The console's own BBA IP (e.g. ``192.168.1.61``), used by
+        bba_ip: The console's own BBA IP (e.g. ``192.0.2.10``), used by
             ``gc_rom_load`` to reach the Swiss netboot listener.
         bba_port: The netboot listener port (default 4242).
+        info: Free-form description/annotation shown in list and status output.
     """
     return hardware.register(
         instance_id,
@@ -401,6 +433,7 @@ def gc_hardware_register(
         serial_devices=serial_devices,
         bba_ip=bba_ip,
         bba_port=bba_port,
+        info=info,
     )
 
 
@@ -412,11 +445,13 @@ def gc_hardware_update(
     serial_devices: list[str] | None = None,
     bba_ip: str | None = None,
     bba_port: int | None = None,
+    info: str | None = None,
 ) -> dict:
     """Update a registered hardware instance's settings and persist them.
 
     Use this to set the console's ``bba_ip`` (its own IP) so ``gc_rom_load`` can
-    reach the Swiss netboot listener, or to change the capture device / ports.
+    reach the Swiss netboot listener, or to change the capture device / ports /
+    ``info`` annotation.
     """
     return hardware.update(
         instance_id,
@@ -425,6 +460,7 @@ def gc_hardware_update(
         serial_devices=serial_devices,
         bba_ip=bba_ip,
         bba_port=bba_port,
+        info=info,
     )
 
 
@@ -545,6 +581,10 @@ def gc_rom_load(instance_id: str, rom_path: str) -> dict:
       ``sdc:/games/Foo.iso``). If the console is currently inside a game the
       listener is down; this first tries to return to Swiss with the A+Z+START
       combo (which needs hardware button pressing, not implemented yet).
+
+      Raises :class:`NetbootError` if the ``BOOT`` command is not answered with
+      ``OK`` — including when the listener returns *no reply* at all (console
+      mid-boot / dropped connection) or refuses the ROM (``ERR <reason>``).
 
     * **Dolphin instance** — stops the current process and relaunches it booting
       the given **host-side** ROM/DOL/ELF path.

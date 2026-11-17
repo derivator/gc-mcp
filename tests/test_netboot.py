@@ -74,39 +74,39 @@ class TestValidateRomPath:
 class TestNetbootClient:
     def test_ping_sends_line_and_returns_reply(self, monkeypatch):
         sock = _patch_socket(monkeypatch, b"PONG\n")
-        client = nb.NetbootClient("192.168.1.61")
+        client = nb.NetbootClient("192.0.2.10")
         assert client.ping() == "PONG"
         assert sock.sent == b"PING\n"
 
     def test_status(self, monkeypatch):
         sock = _patch_socket(monkeypatch, b"READY\n")
-        client = nb.NetbootClient("192.168.1.61")
+        client = nb.NetbootClient("192.0.2.10")
         assert client.status() == "READY"
         assert sock.sent == b"STATUS\n"
 
     def test_boot(self, monkeypatch):
         sock = _patch_socket(monkeypatch, b"OK\n")
-        client = nb.NetbootClient("192.168.1.61")
+        client = nb.NetbootClient("192.0.2.10")
         assert client.boot("sdc:/games/Foo.iso") == "OK"
         assert sock.sent == b"BOOT sdc:/games/Foo.iso\n"
 
     def test_boot_invalid_path_raises_before_sending(self, monkeypatch):
         sock = _patch_socket(monkeypatch, b"OK\n")
-        client = nb.NetbootClient("192.168.1.61")
+        client = nb.NetbootClient("192.0.2.10")
         with pytest.raises(ValueError):
             client.boot("/host/path.iso")
         assert sock.sent == b""
 
     def test_reachable_true(self, monkeypatch):
         _patch_socket(monkeypatch, b"PONG\n")
-        assert nb.NetbootClient("192.168.1.61").reachable() is True
+        assert nb.NetbootClient("192.0.2.10").reachable() is True
 
     def test_reachable_false_on_connection_error(self, monkeypatch):
         def boom(*a, **k):
             raise OSError("connection refused")
 
         monkeypatch.setattr(nb.socket, "create_connection", boom)
-        assert nb.NetbootClient("192.168.1.61").reachable() is False
+        assert nb.NetbootClient("192.0.2.10").reachable() is False
 
     def test_connection_failure_raises_netboot_error(self, monkeypatch):
         def boom(*a, **k):
@@ -114,7 +114,7 @@ class TestNetbootClient:
 
         monkeypatch.setattr(nb.socket, "create_connection", boom)
         with pytest.raises(NetbootError):
-            nb.NetbootClient("192.168.1.61").ping()
+            nb.NetbootClient("192.0.2.10").ping()
 
     def test_no_host_raises_netboot_error(self):
         with pytest.raises(NetbootError):

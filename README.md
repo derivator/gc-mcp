@@ -97,6 +97,13 @@ gc_hardware_status("hw-001")
 gc_hardware_remove("hw-001")
 ```
 
+Every hardware instance carries a free-form `info` annotation (default `""`)
+that you can set with `gc_hardware_register(..., info=...)` or
+`gc_hardware_update("hw-001", info=...)`. It is persisted and shown in
+`gc_hardware_list`, `gc_hardware_status`, and `gc_platform_list` — handy for
+labelling a console ("living-room rig", "capture is the UGREEN card"). Dolphin
+instances take `info` at launch via `gc_instance_start(..., info=...)`.
+
 `gc_hardware_devices` probes each node with `v4l2-ctl` and reports its card
 name, the pixel formats it exposes, and whether it can actually **capture video
 frames** (`can_capture`). Some nodes expose only UVC **metadata** (a capture
@@ -125,7 +132,7 @@ build listens on TCP **4242** of the console's own **BBA IP**, and a one-line
 FSP file server):
 
 ```bash
-gc_hardware_update("hw-001", bba_ip="192.168.1.61")   # remember the console's IP
+gc_hardware_update("hw-001", bba_ip="192.0.2.10")   # remember the console's IP
 gc_rom_load("hw-001", "sdc:/games/Foo.iso")           # boot the game
 ```
 
@@ -141,10 +148,7 @@ gc_rom_load("hw-001", "sdc:/games/Foo.iso")           # boot the game
   **host-side** ROM/DOL/ELF path, keeping the instance id and config.
 
 The netboot protocol is one command per TCP connection (`PING`→`PONG`,
-`STATUS`→`READY`/`BUSY`, `BOOT <path>`→`OK`/`ERR <reason>`). See
-`~/swiss-gc/NETBOOT_USAGE.md` for the exact protocol and
-`~/swiss-gc/NETBOOT_PLAN.md` for the verified setup (console at
-`192.168.1.61/24`, `InitNetwork=Yes` in `swiss/settings/global.ini`).
+`STATUS`→`READY`/`BUSY`, `BOOT <path>`→`OK`/`ERR <reason>`).
 
 ## Running
 

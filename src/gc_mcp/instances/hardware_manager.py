@@ -128,7 +128,8 @@ class HardwareManager:
     def register(self, instance_id: str, *, capture_device: str | None = None,
                  capture: dict[str, Any] | None = None,
                  serial_devices: list[str] | None = None,
-                 bba_ip: str | None = None, bba_port: int | None = None) -> dict:
+                 bba_ip: str | None = None, bba_port: int | None = None,
+                 info: str | None = None) -> dict:
         """Register (and remember) a real GameCube hardware instance."""
         instance_id = self._validate_id(instance_id)
         if instance_id in self._instances:
@@ -137,6 +138,7 @@ class HardwareManager:
         now = _now()
         spec = HardwareInstanceSpec(
             instance_id=instance_id,
+            info=str(info) if info is not None else "",
             capture_device=str(capture_device or self.config.hw_capture_device),
             capture=self._normalise_capture(capture),
             serial_devices=self._normalise_serial(serial_devices),
@@ -162,11 +164,14 @@ class HardwareManager:
     def update(self, instance_id: str, *, capture_device: str | None = None,
                capture: dict[str, Any] | None = None,
                serial_devices: list[str] | None = None,
-               bba_ip: str | None = None, bba_port: int | None = None) -> dict:
+               bba_ip: str | None = None, bba_port: int | None = None,
+               info: str | None = None) -> dict:
         """Update an existing hardware instance's settings and persist them."""
         inst = self.get(instance_id)
         if capture_device is not None:
             inst.spec.capture_device = str(capture_device)
+        if info is not None:
+            inst.spec.info = str(info)
         if capture is not None:
             inst.spec.capture = self._normalise_capture(capture)
         if serial_devices is not None:
@@ -194,6 +199,25 @@ class HardwareManager:
         self._instances.pop(instance_id, None)
         self._save()
         return {"instance_id": instance_id, "removed": True}
+
+    def startup(self) -> dict[str, Any]:
+        """Verify the controller serial devices of every registered hardware instance.
+
+        Called on server startup. For each instance with configured serial
+        devices, the controller is probed with the firmware ``ID`` command (so a
+        dead or wrong device is caught early) and its buttons are reset. The
+        per-port results are stored on each instance and surfaced in its status.
+
+        Returns a summary mapping ``instance_id`` to the list of per-port
+        verify reports. Instances with no serial devices are skipped.
+        """
+        reports: dict[str, Any] = {}
+        for inst_id, inst in self._instances.items():
+            if inst.spec.serial_devices:
+                result = inst.controller.verify()
+                inst.set_controller_reports(result)
+                reports[inst_id] = result
+        return reports
 
     def shutdown(self) -> None:
         """Release controller/capture resources. Hardware instances have no subprocess."""

@@ -67,35 +67,35 @@ def _make_hw_inst(tmp_path, **spec_kw) -> HardwareInstance:
 # ---------------------------------------------------------------------------
 class TestHardwareManagerBba:
     def test_register_defaults_from_config(self, tmp_path):
-        cfg = make_hw_config(tmp_path, hw_bba_ip="192.168.1.61", hw_bba_port=4242)
+        cfg = make_hw_config(tmp_path, hw_bba_ip="192.0.2.10", hw_bba_port=4242)
         mgr = HardwareManager(cfg)
         status = mgr.register("hw-001")
-        assert status["bba_ip"] == "192.168.1.61"
+        assert status["bba_ip"] == "192.0.2.10"
         assert status["bba_port"] == 4242
 
     def test_register_explicit_bba(self, tmp_path):
         mgr = HardwareManager(make_hw_config(tmp_path))
-        status = mgr.register("hw-001", bba_ip="10.0.0.5", bba_port=9999)
-        assert status["bba_ip"] == "10.0.0.5"
+        status = mgr.register("hw-001", bba_ip="203.0.113.5", bba_port=9999)
+        assert status["bba_ip"] == "203.0.113.5"
         assert status["bba_port"] == 9999
 
     def test_update_bba_persists(self, tmp_path):
         cfg = make_hw_config(tmp_path)
         mgr = HardwareManager(cfg)
         mgr.register("hw-001")
-        status = mgr.update("hw-001", bba_ip="192.168.1.61", bba_port=4242)
-        assert status["bba_ip"] == "192.168.1.61"
+        status = mgr.update("hw-001", bba_ip="192.0.2.10", bba_port=4242)
+        assert status["bba_ip"] == "192.0.2.10"
         assert status["bba_port"] == 4242
         # Reload from disk to confirm persistence.
         reloaded = HardwareManager(cfg).status("hw-001")
-        assert reloaded["bba_ip"] == "192.168.1.61"
+        assert reloaded["bba_ip"] == "192.0.2.10"
         assert reloaded["bba_port"] == 4242
 
     def test_bba_persists_across_reload(self, tmp_path):
         cfg = make_hw_config(tmp_path)
-        HardwareManager(cfg).register("hw-001", bba_ip="192.168.1.61")
+        HardwareManager(cfg).register("hw-001", bba_ip="192.0.2.10")
         status = HardwareManager(cfg).status("hw-001")
-        assert status["bba_ip"] == "192.168.1.61"
+        assert status["bba_ip"] == "192.0.2.10"
 
     def test_bba_defaults_to_none(self, tmp_path):
         mgr = HardwareManager(make_hw_config(tmp_path))
@@ -109,7 +109,7 @@ class TestHardwareManagerBba:
 # ---------------------------------------------------------------------------
 class TestHardwareRomLoad:
     def test_rom_load_success(self, tmp_path, monkeypatch):
-        inst = _make_hw_inst(tmp_path, bba_ip="192.168.1.61")
+        inst = _make_hw_inst(tmp_path, bba_ip="192.0.2.10")
         fake = _patch_netboot(monkeypatch, inst, reachable=True, status="READY",
                               boot_reply="OK")
         result = inst.rom_load("sdc:/games/Foo.iso")
@@ -117,11 +117,11 @@ class TestHardwareRomLoad:
         assert result["reply"] == "OK"
         assert result["status"] == "READY"
         assert result["rom_path"] == "sdc:/games/Foo.iso"
-        assert result["bba"] == "192.168.1.61:4242"
+        assert result["bba"] == "192.0.2.10:4242"
         assert fake.boot_calls == ["sdc:/games/Foo.iso"]
 
     def test_rom_load_busy(self, tmp_path, monkeypatch):
-        inst = _make_hw_inst(tmp_path, bba_ip="192.168.1.61")
+        inst = _make_hw_inst(tmp_path, bba_ip="192.0.2.10")
         fake = _patch_netboot(monkeypatch, inst, reachable=True, status="BUSY")
         result = inst.rom_load("sdc:/games/Foo.iso")
         assert result["booted"] is False
@@ -130,7 +130,7 @@ class TestHardwareRomLoad:
         assert fake.boot_calls == []
 
     def test_rom_load_invalid_path_raises_before_netboot(self, tmp_path, monkeypatch):
-        inst = _make_hw_inst(tmp_path, bba_ip="192.168.1.61")
+        inst = _make_hw_inst(tmp_path, bba_ip="192.0.2.10")
         fake = _patch_netboot(monkeypatch, inst, reachable=True, status="READY")
         with pytest.raises(ValueError):
             inst.rom_load("/host/path.iso")
@@ -140,7 +140,7 @@ class TestHardwareRomLoad:
         # Listener down -> reachable() False -> _return_to_swiss() presses
         # A+Z+START on port 0. With no serial device configured this raises
         # ControllerError (there is nothing to press the buttons with).
-        inst = _make_hw_inst(tmp_path, bba_ip="192.168.1.61")
+        inst = _make_hw_inst(tmp_path, bba_ip="192.0.2.10")
         _patch_netboot(monkeypatch, inst, reachable=False)
         with pytest.raises(ControllerError) as exc:
             inst.rom_load("sdc:/games/Foo.iso")
@@ -151,18 +151,29 @@ class TestHardwareRomLoad:
         with pytest.raises(NetbootError):
             inst.rom_load("sdc:/games/Foo.iso")
 
-    def test_rom_load_reports_netboot_reply(self, tmp_path, monkeypatch):
-        inst = _make_hw_inst(tmp_path, bba_ip="192.168.1.61")
+    def test_rom_load_raises_on_err_reply(self, tmp_path, monkeypatch):
+        inst = _make_hw_inst(tmp_path, bba_ip="192.0.2.10")
         _patch_netboot(monkeypatch, inst, reachable=True, status="READY",
                        boot_reply="ERR disk not found")
-        result = inst.rom_load("sdc:/games/Foo.iso")
-        assert result["booted"] is False
-        assert result["reply"] == "ERR disk not found"
+        with pytest.raises(NetbootError) as exc:
+            inst.rom_load("sdc:/games/Foo.iso")
+        assert "ERR disk not found" in str(exc.value)
+
+    def test_rom_load_raises_on_empty_reply(self, tmp_path, monkeypatch):
+        # The listener accepted the connection but returned nothing: the console
+        # is likely mid-boot or the connection was dropped. This must be a hard
+        # error rather than a silent "booted: False".
+        inst = _make_hw_inst(tmp_path, bba_ip="192.0.2.10")
+        _patch_netboot(monkeypatch, inst, reachable=True, status="READY",
+                       boot_reply="")
+        with pytest.raises(NetbootError) as exc:
+            inst.rom_load("sdc:/games/Foo.iso")
+        assert "no reply" in str(exc.value)
 
     def test_rom_load_returns_to_swiss_then_boots(self, tmp_path, monkeypatch):
         # Listener down -> _return_to_swiss presses A+Z+START -> _wait_for_swiss
         # polls until the listener is back -> boots the requested ROM.
-        inst = _make_hw_inst(tmp_path, bba_ip="192.168.1.61")
+        inst = _make_hw_inst(tmp_path, bba_ip="192.0.2.10")
         fake_ctl = FakeController()
         inst._controller = fake_ctl
         boot_calls: list[str] = []
@@ -301,24 +312,24 @@ def hw(monkeypatch, tmp_path):
 
 class TestHardwareRomLoadTools:
     def test_register_with_bba_ip(self, hw):
-        res = server.gc_hardware_register("hw-001", bba_ip="192.168.1.61")
-        assert res["bba_ip"] == "192.168.1.61"
+        res = server.gc_hardware_register("hw-001", bba_ip="192.0.2.10")
+        assert res["bba_ip"] == "192.0.2.10"
         assert res["bba_port"] == 4242
 
     def test_update_bba_ip(self, hw):
         server.gc_hardware_register("hw-001")
-        res = server.gc_hardware_update("hw-001", bba_ip="192.168.1.61")
-        assert res["bba_ip"] == "192.168.1.61"
+        res = server.gc_hardware_update("hw-001", bba_ip="192.0.2.10")
+        assert res["bba_ip"] == "192.0.2.10"
 
     def test_platform_list_surfaces_bba(self, hw):
-        server.gc_hardware_register("hw-001", bba_ip="192.168.1.61")
+        server.gc_hardware_register("hw-001", bba_ip="192.0.2.10")
         platforms = server.gc_platform_list()
         entry = next(p for p in platforms if p["kind"] == "gamecube-hw")
-        assert entry["bba_ip"] == "192.168.1.61"
+        assert entry["bba_ip"] == "192.0.2.10"
         assert entry["bba_port"] == 4242
 
     def test_rom_load_tool_on_hardware(self, hw, monkeypatch):
-        server.gc_hardware_register("hw-001", bba_ip="192.168.1.61")
+        server.gc_hardware_register("hw-001", bba_ip="192.0.2.10")
         inst = hw.get("hw-001")
         fake = _patch_netboot(monkeypatch, inst, reachable=True, status="READY",
                               boot_reply="OK")

@@ -52,6 +52,8 @@ class HardwareInstanceSpec:
     """Persistent settings for one real GameCube hardware instance."""
 
     instance_id: str
+    #: Free-form description/annotation shown in list and status output.
+    info: str = ""
     #: Video4Linux2 capture device path (e.g. ``/dev/video0``).
     capture_device: str = "/dev/video0"
     #: Capture backend options (width/height/format/fps/flush_frames and the
@@ -60,7 +62,7 @@ class HardwareInstanceSpec:
     #: Up to four serial device paths that act as the GameCube controllers.
     serial_devices: list[str] = field(default_factory=list)
     #: The console's own BBA IP, used to reach the Swiss netboot listener for
-    #: ``gc_rom_load`` (e.g. ``192.168.1.61``). None until configured.
+    #: ``gc_rom_load`` (e.g. ``192.0.2.10``). None until configured.
     bba_ip: str | None = None
     #: The netboot listener port on the console (default 4242).
     bba_port: int = DEFAULT_BBA_PORT
@@ -70,6 +72,7 @@ class HardwareInstanceSpec:
     def to_dict(self) -> dict[str, Any]:
         return {
             "instance_id": self.instance_id,
+            "info": self.info,
             "capture_device": self.capture_device,
             "capture": dict(self.capture),
             "serial_devices": list(self.serial_devices),
@@ -90,6 +93,29 @@ class HardwareInstance:
         #: Called after a mutation so the manager can persist the registry.
         self._persist = persist
         self._controller: HardwareController | None = None
+        #: Per-port result of the last ``HardwareController.verify()`` (ID probe),
+        #: populated on server startup; ``None`` until verified.
+        self._controller_reports: list[dict[str, Any]] | None = None
+
+    # ------------------------------------------------------------------
+    # Controller verification (startup ID probe)
+    # ------------------------------------------------------------------
+    def set_controller_reports(self, reports: list[dict[str, Any]]) -> None:
+        """Record the per-port result of a controller ``verify()`` probe."""
+        self._controller_reports = list(reports)
+
+    def controller_verified(self) -> bool:
+        """Whether every configured serial device passed the startup ID probe.
+
+        Returns True if there are no serial devices to verify, or if every
+        probed device answered with a valid identify line.
+        """
+        if not self.spec.serial_devices:
+            return True
+        reports = self._controller_reports
+        if reports is None or len(reports) != len(self.spec.serial_devices):
+            return False
+        return all(r.get("ok") for r in reports)
 
     # ------------------------------------------------------------------
     # Controller backend (serial devices)
@@ -125,6 +151,11 @@ class HardwareInstance:
         console is currently inside a game the netboot listener is down, so this
         first returns to Swiss with the A+Z+START combo and waits for the
         listener to come back up before booting.
+
+        Raises :class:`NetbootError` if the ``BOOT`` command is not answered with
+        ``OK`` — in particular if the listener returns *no reply* at all (which
+        usually means the console is mid-boot or the connection was dropped), or
+        if it refuses the ROM (``ERR <reason>``).
         """
         if not self.spec.bba_ip:
             raise NetbootError(
@@ -151,6 +182,15 @@ class HardwareInstance:
                 "to READY before booting again",
             }
         reply = client.boot(path)
+        if not reply.strip():
+            raise NetbootError(
+                f"the Swiss netboot listener at {self._bba()} returned no reply "
+                f"to 'BOOT {path}'"
+            )
+        if not reply.upper().startswith("OK"):
+            raise NetbootError(
+                f"Swiss refused to boot {path!r}: {reply}"
+            )
         return {
             "instance_id": self.spec.instance_id,
             "kind": "gamecube-hw",
@@ -158,7 +198,7 @@ class HardwareInstance:
             "bba": self._bba(),
             "status": status,
             "reply": reply,
-            "booted": reply.upper().startswith("OK"),
+            "booted": True,
         }
 
     def _bba(self) -> str:
@@ -268,6 +308,7 @@ class HardwareInstance:
         return {
             "instance_id": self.spec.instance_id,
             "kind": "gamecube-hw",
+            "info": self.spec.info,
             "capture_device": self.spec.capture_device,
             "capture": {
                 **self.spec.capture,
@@ -280,6 +321,10 @@ class HardwareInstance:
             "bba_ip": self.spec.bba_ip,
             "bba_port": self.spec.bba_port,
             "capture_ready": self.capture_ready(),
+            "controller": {
+                "verified": self.controller_verified(),
+                "reports": self._controller_reports,
+            },
             "created_at": self.spec.created_at,
             "updated_at": self.spec.updated_at,
         }

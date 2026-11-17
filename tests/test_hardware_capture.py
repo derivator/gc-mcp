@@ -17,6 +17,7 @@ from gc_mcp.capture.v4l2 import (
     _parse_formats,
 )
 from gc_mcp.config import ServerConfig
+from gc_mcp.controllers.hardware import HardwareController
 from gc_mcp.errors import (
     AlreadyExistsError,
     CaptureError,
@@ -398,6 +399,19 @@ class TestHardwareManager:
         # Reload to confirm persistence.
         assert HardwareManager(cfg).status("hw-001")["capture_device"] == "/dev/video2"
 
+    def test_register_and_update_info(self, tmp_path):
+        cfg = make_hw_config(tmp_path)
+        mgr = HardwareManager(cfg)
+        status = mgr.register("hw-001", info="living-room console")
+        assert status["info"] == "living-room console"
+        # info defaults to "" when not supplied.
+        assert mgr.register("hw-002")["info"] == ""
+        # Update the info field and confirm it persists across a reload.
+        updated = mgr.update("hw-001", info="now in the garage")
+        assert updated["info"] == "now in the garage"
+        reloaded = HardwareManager(cfg).status("hw-001")
+        assert reloaded["info"] == "now in the garage"
+
     def test_remove_persists(self, tmp_path):
         cfg = make_hw_config(tmp_path)
         mgr = HardwareManager(cfg)
@@ -487,6 +501,82 @@ class TestGameCubeHWPlatform:
             plat.controller_press(0, "A")
         assert "no serial device" in str(exc.value)
 
+    def test_startup_verifies_controller_serials(self, tmp_path, monkeypatch):
+        """manager.startup() probes each instance's controller and records reports."""
+        cfg = make_hw_config(tmp_path)
+        mgr = HardwareManager(cfg)
+        mgr.register("hw-001", serial_devices=["/dev/ttyUSB0", "/dev/ttyUSB1"])
+
+        fake_reports = [
+            {"port": 0, "device": "/dev/ttyUSB0", "ok": True,
+             "id": "GCCTRL:1 firmware=1 proto=3 report=8 frame=10 baud=115200",
+             "error": None},
+            {"port": 1, "device": "/dev/ttyUSB1", "ok": True,
+             "id": "GCCTRL:1 firmware=1 proto=3 report=8 frame=10 baud=115200",
+             "error": None},
+        ]
+        calls: list = []
+
+        def fake_verify(self, timeout=None):
+            calls.append(timeout)
+            return list(fake_reports)
+
+        monkeypatch.setattr(HardwareController, "verify", fake_verify)
+
+        result = mgr.startup()
+        assert result["hw-001"] == fake_reports
+        inst = mgr.get("hw-001")
+        assert inst.controller_verified() is True
+        assert calls  # verify() was invoked (with a timeout)
+        # The status surfaces the verified flag and per-port reports.
+        assert inst.status()["controller"]["verified"] is True
+        assert inst.status()["controller"]["reports"] == fake_reports
+
+    def test_startup_skips_instances_without_serial(self, tmp_path, monkeypatch):
+        """manager.startup() skips instances that have no serial devices to probe."""
+        cfg = make_hw_config(tmp_path)
+        mgr = HardwareManager(cfg)
+        mgr.register("hw-noserial")
+        mgr.register("hw-serial", serial_devices=["/dev/ttyUSB0"])
+
+        fake = [{"port": 0, "device": "/dev/ttyUSB0", "ok": True,
+                 "id": "GCCTRL:1 firmware=1 proto=3 report=8 frame=10 baud=115200",
+                 "error": None}]
+        monkeypatch.setattr(
+            HardwareController, "verify", lambda self, timeout=None: list(fake)
+        )
+
+        result = mgr.startup()
+        assert "hw-noserial" not in result
+        assert "hw-serial" in result
+        # An instance with no serial devices is trivially considered verified.
+        assert mgr.get("hw-noserial").controller_verified() is True
+        assert mgr.get("hw-serial").controller_verified() is True
+
+    def test_controller_verified_edge_cases(self, tmp_path):
+        cfg = make_hw_config(tmp_path)
+        # No serial devices -> trivially verified.
+        no_serial = HardwareInstance(
+            HardwareInstanceSpec(instance_id="hw-001"), cfg
+        )
+        assert no_serial.controller_verified() is True
+
+        inst = HardwareInstance(
+            HardwareInstanceSpec(instance_id="hw-002", serial_devices=["/dev/ttyUSB0"]),
+            cfg,
+        )
+        # Reports not yet recorded -> not verified.
+        assert inst.controller_verified() is False
+        # Wrong number of reports (none recorded) -> not verified.
+        inst.set_controller_reports([])
+        assert inst.controller_verified() is False
+        # Every port ok -> verified.
+        inst.set_controller_reports([{"ok": True, "device": "/dev/ttyUSB0"}])
+        assert inst.controller_verified() is True
+        # Any port not ok -> not verified.
+        inst.set_controller_reports([{"ok": False}])
+        assert inst.controller_verified() is False
+
     def test_memory_unsupported(self, tmp_path):
         inst = HardwareInstance(
             HardwareInstanceSpec(instance_id="hw-001"),
@@ -557,6 +647,37 @@ class TestHardwareTools:
         server.gc_hardware_register("hw-001")
         res = server.gc_hardware_update("hw-001", serial_devices=["/dev/ttyUSB0"])
         assert res["serial_devices"] == ["/dev/ttyUSB0"]
+
+    def test_register_and_list_include_info(self, hw):
+        server.gc_hardware_register("hw-001", info="test rig")
+        listing = server.gc_hardware_list()
+        assert listing[0]["info"] == "test rig"
+
+    def test_platform_list_includes_hardware_info(self, hw):
+        server.gc_hardware_register("hw-001", capture_device="/dev/video0",
+                                    info="test rig")
+        platforms = server.gc_platform_list()
+        hw_entries = [p for p in platforms if p["kind"] == "gamecube-hw"]
+        assert any(p["instance_id"] == "hw-001" and p["info"] == "test rig"
+                   for p in hw_entries)
+
+    def test_platform_list_includes_dolphin_info(self, hw, monkeypatch):
+        # gc_platform_list also surfaces Dolphin entries; patch the Dolphin
+        # manager so its status dict (with `info`) flows through.
+        class FakeManager:
+            def list(self):
+                return [{
+                    "instance_id": "dol-001",
+                    "running": True,
+                    "pid": 1234,
+                    "info": "dev rig",
+                }]
+
+        monkeypatch.setattr(server, "manager", FakeManager())
+        platforms = server.gc_platform_list()
+        dolphin = [p for p in platforms if p["kind"] == "dolphin"]
+        assert any(p["instance_id"] == "dol-001" and p["info"] == "dev rig"
+                   for p in dolphin)
 
     def test_platform_list_includes_hardware(self, hw):
         server.gc_hardware_register("hw-001", capture_device="/dev/video0")

@@ -6,7 +6,7 @@ spawned server, then SIGTERMs the server and asserts that the Dolphin subprocess
 is gone (not orphaned).
 
 Run manually:
-    .venv/bin/python tests/test_shutdown_e2e.py
+    GC_MCP_TEST_ROM=/path/to/rom.gcm .venv/bin/python tests/test_shutdown_e2e.py
 """
 
 from __future__ import annotations
@@ -24,7 +24,14 @@ from mcp.client.stdio import stdio_client, StdioServerParameters
 ROOT = Path(__file__).resolve().parents[1]
 SERVER = ROOT / ".venv" / "bin" / "gc-mcp"
 FZERO = "fzero"
-ROM = "/home/coder/test-roms/ic3-fzero.gcm"
+
+#: Path to a GameCube ROM to boot. Override via the ``GC_MCP_TEST_ROM`` env var.
+ROM = os.environ.get("GC_MCP_TEST_ROM", "")
+if not ROM:
+    raise SystemExit(
+        "Set GC_MCP_TEST_ROM to the path of a GameCube ROM (e.g. a .gcm/.iso) "
+        "to run this e2e test."
+    )
 
 
 def _procs() -> dict[int, dict]:

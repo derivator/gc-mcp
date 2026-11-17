@@ -1,7 +1,7 @@
 """Swiss netboot client.
 
-A custom build of Swiss (see ``~/swiss-gc/NETBOOT_USAGE.md``) runs a tiny
-line-based TCP listener on the console's BBA. Sending a one-line command boots a
+A custom build of Swiss runs a tiny line-based TCP listener on the console's
+BBA. Sending a one-line command boots a
 ROM from the console's own media — no controller or host-side media access is
 needed. This module is the host-side client for that listener.
 
@@ -23,7 +23,7 @@ import socket
 
 from .errors import NetbootError
 
-#: The netboot listener port (see NETBOOT_USAGE.md).
+#: The netboot listener port.
 NETBOOT_PORT = 4242
 
 #: Default per-connection timeout (seconds).

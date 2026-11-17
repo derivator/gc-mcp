@@ -40,6 +40,8 @@ class InstanceSpec:
     instance_id: str
     rom_path: Path
     user_dir: Path
+    #: Free-form description/annotation shown in list and status output.
+    info: str = ""
     #: Controller ports (0-3) to attach a standard GameCube controller to.
     controller_ports: tuple[int, ...] = (0,)
     #: BBA mode (ipc/hle/xlink/tap/tapserver/modem) or None to disable.
@@ -336,6 +338,7 @@ class DolphinInstance:
             "instance_id": spec.instance_id,
             "pid": self.pid,
             "running": running,
+            "info": spec.info,
             "rom": str(spec.rom_path),
             "user_dir": str(spec.user_dir),
             "controller_ports": list(spec.controller_ports),

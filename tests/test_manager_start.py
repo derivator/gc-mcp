@@ -84,6 +84,21 @@ def test_start_writes_config_and_fifos(tmp_path, fake_dolphin):
         manager.shutdown()
 
 
+def test_start_sets_info(tmp_path, fake_dolphin):
+    rom = tmp_path / "game.iso"
+    rom.write_bytes(b"\x00" * 1024)
+
+    cfg = make_config(tmp_path, fake_dolphin)
+    manager = InstanceManager(cfg)
+
+    status = manager.start("test1", rom, info="dev rig", capture_backend="framedump")
+    try:
+        assert status["info"] == "dev rig"
+        assert manager.list()[0]["info"] == "dev rig"
+    finally:
+        manager.shutdown()
+
+
 def test_start_missing_rom_raises(tmp_path, fake_dolphin):
     cfg = make_config(tmp_path, fake_dolphin)
     manager = InstanceManager(cfg)

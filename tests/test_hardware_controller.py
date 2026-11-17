@@ -10,6 +10,7 @@ import pytest
 
 from gc_mcp.controllers import pad_state as ps
 from gc_mcp.controllers.hardware import (
+    _ID_COMMAND,
     CENTER,
     H1,
     SYNC,
@@ -51,6 +52,71 @@ def fake_serial(monkeypatch) -> FakeSerial:
         lambda device, baud, timeout: fake,
     )
     return fake
+
+
+class VerifySerial:
+    """Fake ``serial.Serial`` that answers the ``ID`` command like the Arduino.
+
+    ``write(b"ID\\n")`` loads ``response`` into the read buffer; ``read`` drains
+    it byte-by-byte (as ``_read_line`` does). Other writes (e.g. the neutral
+    frame) are recorded but do not produce a reply.
+    """
+
+    def __init__(self, response: bytes = b"") -> None:
+        self.writes: list[bytes] = []
+        self.is_open = True
+        self.closed = False
+        self.response = bytes(response)
+        self._buffer = bytearray()
+
+    def write(self, data) -> None:
+        data = bytes(data)
+        self.writes.append(data)
+        if data == _ID_COMMAND:
+            self._buffer.extend(self.response)
+
+    def read(self, n: int = 1) -> bytes:
+        if not self._buffer:
+            return b""
+        out = bytes(self._buffer[:n])
+        del self._buffer[:n]
+        return out
+
+    def reset_input_buffer(self) -> None:
+        self._buffer.clear()
+
+    def close(self) -> None:
+        self.is_open = False
+        self.closed = True
+
+
+#: A valid firmware identify reply (see main.cpp).
+_ID_LINE = b"GCCTRL:1 firmware=1.2 proto=3 report=8 frame=10 baud=115200\n"
+
+
+def _ctrl_with_serials(
+    monkeypatch,
+    devices: list[str],
+    responses: list[bytes] | None = None,
+    **kw,
+) -> tuple[HardwareController, list[VerifySerial]]:
+    """Build a :class:`HardwareController` whose ``_open_serial`` returns pre-made
+    :class:`VerifySerial` fakes, one per device.
+
+    ``responses`` (optional) sets the ``ID`` reply each fake returns. Ports are
+    opened in order, so the ``i``-th fake backs the ``i``-th device.
+    """
+    fakes = [VerifySerial() for _ in devices]
+    if responses:
+        for fake, resp in zip(fakes, responses):
+            fake.response = resp
+    counter = iter(fakes)
+
+    def opener(device, baud, timeout):
+        return next(counter)
+
+    monkeypatch.setattr("gc_mcp.controllers.hardware._open_serial", opener)
+    return HardwareController(devices, **kw), fakes
 
 
 def _last_report(fake: FakeSerial) -> bytes | None:
@@ -249,6 +315,28 @@ class TestRepeater:
         time.sleep(0.03)
         assert fake_serial.writes == []
 
+    def test_close_resets_buttons_to_neutral(self, fake_serial) -> None:
+        """Closing the controller must write a neutral report before closing."""
+        ctl = HardwareController(["/dev/ttyUSB0"], send_interval=0.001)
+        ctl.press(0, "A")
+        ctl.press(0, "Z")
+        ctl.set_stick(0, "main", 1.0, 1.0)
+        ctl.set_trigger(0, "L", 1.0)
+        time.sleep(0.02)
+        ctl.close()
+        # The last report written before the device closed must be neutral.
+        report = _last_report(fake_serial)
+        assert report is not None
+        assert report == bytes(
+            [0x00, H1, CENTER, CENTER, CENTER, CENTER, TRIG_RELEASED, TRIG_RELEASED]
+        )
+        # The neutral frame is repeated to survive dropped bytes.
+        neutral = [
+            f for f in fake_serial.writes
+            if len(f) == 10 and f[0] == SYNC and f[1:9] == report
+        ]
+        assert len(neutral) >= 2
+
 
 # ---------------------------------------------------------------------------
 # Error handling
@@ -281,3 +369,81 @@ class TestErrors:
         with pytest.raises(ControllerError) as exc:
             _open_serial("/dev/ttyUSB0", 115200, 1.0)
         assert "cannot open serial device" in str(exc.value)
+
+
+# ---------------------------------------------------------------------------
+# Startup verification (ID probe)
+# ---------------------------------------------------------------------------
+class TestStartupVerification:
+    def test_is_identify_line(self) -> None:
+        assert HardwareController._is_identify_line(
+            "GCCTRL:1 firmware=1.2 proto=3 report=8 frame=10 baud=115200"
+        ) is True
+        assert HardwareController._is_identify_line("garbage") is False
+        assert HardwareController._is_identify_line("") is False
+
+    def test_verify_reports_ok_for_responding_device(self, monkeypatch) -> None:
+        ctl, fakes = _ctrl_with_serials(
+            monkeypatch, ["/dev/ttyUSB0"], responses=[_ID_LINE], send_interval=0.001
+        )
+        try:
+            reports = ctl.verify(timeout=0.5)
+            assert len(reports) == 1
+            assert reports[0]["ok"] is True
+            assert reports[0]["id"].startswith("GCCTRL:")
+            assert reports[0]["error"] is None
+            # The ID command (not just a frame) was sent.
+            assert _ID_COMMAND in fakes[0].writes
+        finally:
+            ctl.close()
+
+    def test_verify_resets_buttons_to_neutral(self, monkeypatch) -> None:
+        ctl, fakes = _ctrl_with_serials(
+            monkeypatch, ["/dev/ttyUSB0"], responses=[_ID_LINE], send_interval=0.001
+        )
+        try:
+            ctl.verify(timeout=0.5)
+            neutral = ctl.build_frame(_PortState(port=0))
+            # The neutral report is pushed repeatedly to survive dropped bytes.
+            count = sum(1 for w in fakes[0].writes if w == neutral)
+            assert count >= 3
+        finally:
+            ctl.close()
+
+    def test_verify_reports_not_ok_for_silent_device(self, monkeypatch) -> None:
+        ctl, _ = _ctrl_with_serials(
+            monkeypatch, ["/dev/ttyUSB0"], responses=[b""], send_interval=0.001
+        )
+        try:
+            reports = ctl.verify(timeout=0.2)
+            assert reports[0]["ok"] is False
+            assert reports[0]["error"] is None
+        finally:
+            ctl.close()
+
+    def test_verify_reports_error_for_unopenable_device(self, monkeypatch) -> None:
+        def boom(device, baud, timeout):
+            raise ControllerError(f"cannot open serial device {device!r}")
+
+        monkeypatch.setattr("gc_mcp.controllers.hardware._open_serial", boom)
+        ctl = HardwareController(["/dev/ttyUSB0"])
+        try:
+            reports = ctl.verify(timeout=0.2)
+            assert reports[0]["ok"] is False
+            assert reports[0]["error"] is not None
+            assert "cannot open" in reports[0]["error"]
+        finally:
+            ctl.close()
+
+    def test_verify_starts_repeater(self, monkeypatch) -> None:
+        ctl, fakes = _ctrl_with_serials(
+            monkeypatch, ["/dev/ttyUSB0"], responses=[_ID_LINE], send_interval=0.001
+        )
+        try:
+            ctl.verify(timeout=0.5)
+            assert ctl._thread is not None and ctl._thread.is_alive()
+            # The repeater keeps writing frames to the open device.
+            time.sleep(0.03)
+            assert any(len(w) == 10 and w[0] == SYNC for w in fakes[0].writes)
+        finally:
+            ctl.close()

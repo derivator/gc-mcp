@@ -73,7 +73,7 @@ class InstanceManager:
               native_resolution: str | None = None, gpu_accel: str | None = None,
               extra_core: dict | None = None, extra_pad: dict | None = None,
               extra_args: list | None = None, boot_ipl: bool = False,
-              **kwargs) -> dict:
+              info: str | None = None, **kwargs) -> dict:
         """Create and start a new Dolphin instance."""
         instance_id = self._validate_id(instance_id)
         if instance_id in self._instances:
@@ -91,6 +91,7 @@ class InstanceManager:
 
         spec = InstanceSpec(
             instance_id=instance_id,
+            info=str(info) if info is not None else "",
             rom_path=rom,
             user_dir=user_dir,
             controller_ports=ports,

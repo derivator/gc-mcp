@@ -27,7 +27,9 @@ actions just update the report and return immediately, so they never block the
 from __future__ import annotations
 
 import threading
+import time
 from dataclasses import dataclass
+from typing import Any
 
 from ..errors import ControllerError
 from . import pad_state as ps
@@ -65,6 +67,23 @@ _BUTTON_BITS: dict[str, tuple[int, int]] = {
 
 #: Default interval (seconds) between repeater writes to each open port.
 DEFAULT_SEND_INTERVAL = 0.01
+
+#: How many times the neutral report is written to each serial device on
+#: shutdown. The Arduino can drop bytes while it is busy servicing a poll, so
+#: the release frame is repeated to be sure the console sees it before the
+#: device is closed.
+_NEUTRAL_RETRIES = 3
+
+#: The text command that asks the Arduino firmware to identify itself.
+_ID_COMMAND = b"ID\n"
+#: The prefix of the identify line the firmware replies with (see main.cpp).
+_IDENTIFY_PREFIX = "GCCTRL:"
+#: Extra fields that must be present for a reply to count as a valid identify.
+_IDENTIFY_FIELDS = ("firmware=", "proto=", "report=", "frame=", "baud=")
+#: How many times the ``ID`` command is re-sent before giving up on a device.
+#: The Arduino can drop serial bytes while it is busy servicing a console poll,
+#: so a single exchange can be lost.
+_ID_ATTEMPTS = 2
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -163,25 +182,153 @@ class HardwareController(ControllerBackend):
             )
         return self.serial_devices[port]
 
+    def _open_device(self, port: int) -> object:
+        """Open and register the serial device for ``port`` (idempotent).
+
+        Unlike :meth:`_ensure_open` this does *not* start the repeater, so a
+        caller can exchange text commands (e.g. the ``ID`` probe) before any
+        binary frames are written on the wire. The caller must hold
+        :attr:`_lock`.
+        """
+        ser = self._serials.get(port)
+        if ser is not None and getattr(ser, "is_open", True):
+            return ser
+        device = self._device_for_port(port)
+        if ser is not None:
+            try:
+                ser.close()  # type: ignore[attr-defined]
+            except OSError:
+                pass
+            self._serials.pop(port, None)
+        ser = _open_serial(device, self.baud, self.open_timeout)
+        self._serials[port] = ser
+        self._states.setdefault(port, _PortState(port=port))
+        return ser
+
+    def _drop_device(self, port: int) -> None:
+        """Close and forget the serial device for ``port``. Caller holds :attr:`_lock`."""
+        ser = self._serials.pop(port, None)
+        if ser is not None:
+            try:
+                ser.close()  # type: ignore[attr-defined]
+            except OSError:
+                pass
+
     def _ensure_open(self, port: int) -> object:
         """Open the serial device for ``port`` (idempotent) and start the repeater."""
         port = ps.validate_port(port)
         with self._lock:
-            ser = self._serials.get(port)
-            if ser is not None and getattr(ser, "is_open", True):
-                return ser
-            device = self._device_for_port(port)
-            if ser is not None:
-                try:
-                    ser.close()  # type: ignore[attr-defined]
-                except OSError:
-                    pass
-                self._serials.pop(port, None)
-            ser = _open_serial(device, self.baud, self.open_timeout)
-            self._serials[port] = ser
-            self._states.setdefault(port, _PortState(port=port))
+            ser = self._open_device(port)
             self._start_repeater()
             return ser
+
+    # ------------------------------------------------------------------
+    # Startup verification (ID probe)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _is_identify_line(line: str) -> bool:
+        """Whether ``line`` is a valid ``ID`` reply (``GCCTRL:...``).
+
+        The firmware replies with e.g.
+        ``GCCTRL:1 firmware=1.2 proto=3 report=8 frame=10 baud=115200``.
+        """
+        return line.startswith(_IDENTIFY_PREFIX) and all(
+            f in line for f in _IDENTIFY_FIELDS
+        )
+
+    def _read_line(self, ser: object, timeout: float) -> str:
+        """Read one line-terminated reply from ``ser``, waiting up to ``timeout``.
+
+        The firmware's identify reply is a single ``\\n``-terminated line. Reads
+        byte-by-byte until the newline or the deadline; the serial read timeout
+        means an idle device returns empty reads, so we keep polling until the
+        overall deadline rather than treating a single empty read as done.
+        """
+        deadline = time.monotonic() + timeout
+        buf = bytearray()
+        while time.monotonic() < deadline:
+            try:
+                b = ser.read(1)  # type: ignore[attr-defined]
+            except (OSError, ValueError):
+                break
+            if not b:
+                continue
+            if b == b"\n":
+                break
+            buf += b
+        return buf.decode("ascii", "replace").strip()
+
+    def _identify(self, ser: object, timeout: float) -> str:
+        """Send the ``ID`` command and return the device's identify line.
+
+        Retries a few times because the Arduino can drop serial bytes while it
+        is busy servicing a console poll, so a single exchange can be lost.
+        Returns the last non-empty line (possibly ``""`` if nothing answered).
+        """
+        last = ""
+        for _ in range(_ID_ATTEMPTS):
+            try:
+                ser.reset_input_buffer()  # type: ignore[attr-defined]
+            except (AttributeError, OSError):
+                pass
+            try:
+                ser.write(_ID_COMMAND)  # type: ignore[attr-defined]
+            except (OSError, ValueError):
+                break
+            line = self._read_line(ser, timeout)
+            if line:
+                last = line
+                if self._is_identify_line(line):
+                    break
+        return last
+
+    def verify(self, timeout: float | None = None) -> list[dict[str, Any]]:
+        """Probe every configured serial device with the firmware ``ID`` command.
+
+        Used on startup to confirm each connected Arduino actually responds (so a
+        dead or wrong device is caught early), then to push a neutral report so
+        no button/stick is left held. The repeater is started for any device
+        that opened successfully, so the controller is ready for use.
+
+        Returns a per-port report: ``{"port", "device", "ok", "id", "error"}``.
+        ``ok`` is True only when the device answered with a valid ``GCCTRL:``
+        identify line. A device that fails to open or answer is *reported* (not
+        raised) so one dead port does not stop the others being probed.
+        """
+        timeout = float(timeout) if timeout is not None else self.open_timeout
+        results: list[dict[str, Any]] = []
+        with self._lock:
+            for port in range(len(self.serial_devices)):
+                device = self.serial_devices[port]
+                entry: dict[str, Any] = {
+                    "port": port,
+                    "device": device,
+                    "ok": False,
+                    "id": None,
+                    "error": None,
+                }
+                ser: object | None = None
+                try:
+                    ser = self._open_device(port)
+                    id_line = self._identify(ser, timeout)
+                    entry["id"] = id_line
+                    entry["ok"] = self._is_identify_line(id_line)
+                except Exception as exc:  # noqa: BLE001 - per-port probe must never abort the whole startup sweep
+                    entry["error"] = str(exc)
+                    self._drop_device(port)
+                results.append(entry)
+                # Reset the buttons to be sure nothing is left held, for any
+                # device that opened (even if the ID probe did not answer). This
+                # is best-effort: if the device went away the repeater drops it.
+                if ser is not None and entry["error"] is None:
+                    neutral = self.build_frame(_PortState(port=port))
+                    try:
+                        for _ in range(_NEUTRAL_RETRIES):
+                            ser.write(neutral)  # type: ignore[attr-defined]
+                    except (OSError, ValueError):
+                        self._drop_device(port)
+            self._start_repeater()
+        return results
 
     # ------------------------------------------------------------------
     # Frame building
@@ -335,8 +482,22 @@ class HardwareController(ControllerBackend):
         thread = self._thread
         if thread is not None:
             thread.join(timeout=2.0)
+        # Reset every port to a neutral report and push it out before closing so
+        # the console isn't left with a held button/stick after the server exits.
+        # The Arduino can drop bytes during a poll, so repeat the neutral frame a
+        # few times to be safe.
         with self._lock:
-            for ser in self._serials.values():
+            for port in self._states:
+                self._states[port] = _PortState(port=port)
+            for port, ser in list(self._serials.items()):
+                if not getattr(ser, "is_open", True):
+                    continue
+                frame = self.build_frame(self._states[port])
+                for _ in range(_NEUTRAL_RETRIES):
+                    try:
+                        ser.write(frame)  # type: ignore[attr-defined]
+                    except (OSError, ValueError):
+                        break
                 try:
                     ser.close()  # type: ignore[attr-defined]
                 except OSError:
