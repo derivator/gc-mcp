@@ -217,11 +217,11 @@ def gc_server_info() -> dict:
 def gc_gpu_info() -> dict:
     """Report GPU rendering diagnostics for this host.
 
-    Useful for deciding whether a GameCube instance will render on a real GPU or
-    fall back to Mesa software (llvmpipe), and for diagnosing the ``/dev/shm``
-    SIGBUS crash that occurs when the shared-memory filesystem is too small for
-    Dolphin's emulated RAM.
+    Shows whether instances render on a real GPU or fall back to software, and
+    reports shared-memory (``/dev/shm``) usage.
     """
+    # llvmpipe means the host fell back to Mesa software rendering. A too-small
+    # /dev/shm can SIGBUS Dolphin when it backs emulated RAM with shared memory.
     return {
         "gpu_available": config.gpu_available,
         "gpu_device": config.gpu_device,
@@ -238,11 +238,7 @@ def gc_gpu_info() -> dict:
 # ---------------------------------------------------------------------------
 @mcp.tool()
 def gc_platform_list() -> list[dict]:
-    """List the platforms currently available to control.
-
-    Includes each running Dolphin instance (``dolphin:<id>``) and each
-    registered real GameCube hardware instance (``gamecube-hw:<id>``).
-    """
+    """List available platforms: running Dolphin instances and registered hardware."""
     platforms = []
     for inst in manager.list():
         platforms.append(
@@ -285,10 +281,7 @@ def gc_platform_list() -> list[dict]:
 
 @mcp.tool()
 def gc_platform_capabilities(platform: str) -> dict:
-    """Describe the capabilities of a platform.
-
-    ``platform`` may be ``dolphin:<instance_id>`` or ``gamecube-hw:<id>``.
-    """
+    """Describe what a platform supports. ``platform`` is ``dolphin:<id>`` or ``gamecube-hw:<id>``."""
     plat = resolve_platform(platform, manager, hardware)
     return plat.describe()
 
@@ -298,54 +291,24 @@ def gc_platform_capabilities(platform: str) -> dict:
 # ---------------------------------------------------------------------------
 @mcp.tool()
 def gc_instance_start(instance_id: str, rom_path: str) -> dict:
-    """Boot/load a ROM on an instance.
+    """Boot or reload a ROM on an existing instance.
 
-    This is the unified entry point for pointing a target at a game. All
-    per-instance configuration (controller ports, video backend, BBA mode, ...)
-    is set when the instance is **created** with ``gc_instance_create_emulator``
-    (Dolphin) or ``gc_instance_create_hardware`` (real hardware); this tool only
-    boots or reloads a ROM. It dispatches on the kind of instance:
-
-    * **Existing Dolphin instance** — stops the currently-running game (if any)
-      and relaunches the instance booting ``rom_path``, keeping its id, data dir
-      and configuration.
-    * **Real GameCube hardware** — sends a ``BOOT`` command to the console's
-      Swiss netboot listener (TCP 4242 on the instance's ``bba_ip``).
-      ``rom_path`` must be a **console-side** path (``sdc:/`` or ``fsp:/``).
-    * **New instance** — if no instance with ``instance_id`` exists yet, creates
-      and starts a new Dolphin emulator with the server's default configuration
-      booting ``rom_path``. To set custom configuration first, create the
-      instance with ``gc_instance_create_emulator`` and then boot it here.
-
-    .. note::
-       **It stops a game that is currently running.** On a Dolphin instance this
-       stops the current process before relaunching with the new ROM. On real
-       hardware it returns the console to Swiss (exiting the running game) before
-       booting the new ROM.
-
-    .. note::
-       **On real hardware, loading can take a while.** The netboot call returns as
-       soon as Swiss *accepts* the ``BOOT`` command; it does not wait for the game
-       to finish loading. After that the console loads the disc from its own media,
-       which can take anywhere from a few seconds (an SD card) to well over a
-       minute (a slow disc or network path). Poll ``gc_capture_screenshot`` /
-       ``gc_instance_status`` to confirm the game has reached its title screen.
-
-    Args:
-        instance_id: Unique id for the instance.
-        rom_path: Host-side path to a .iso/.gcm/.dol/.elf file for a Dolphin
-            instance, or a **console-side** path (``sdc:/`` or ``fsp:/``) for real
-            GameCube hardware.
+    For a Dolphin instance this restarts it with ``rom_path`` (a host-side
+    .iso/.gcm/.dol/.elf path). For real hardware, ``rom_path`` is a console-side
+    Swiss path (``sdc:/`` or ``fsp:/``). If no instance with ``instance_id``
+    exists, a default Dolphin instance is created and started.
     """
-    # An existing Dolphin instance is relaunched with the new ROM (stopping the
-    # currently-running game first); an existing hardware instance is netbooted.
+    # Dolphin: stop any running game and relaunch this instance with the new ROM
+    # (keeping its id, data dir and configuration). Hardware: send a BOOT to the
+    # console's Swiss netboot listener (TCP 4242 on its bba_ip); the call returns
+    # as soon as Swiss accepts it, not when the game finishes loading.
     dol = manager.get_or_none(instance_id)
     if dol is not None:
         return dol.relaunch(rom_path)
     hw = hardware.get_or_none(instance_id)
     if hw is not None:
         return GameCubeHWPlatform(hw).rom_load(rom_path)
-    # No existing instance -> create a new Dolphin instance with defaults.
+    # Unknown id: create a new Dolphin instance with server defaults.
     return manager.start(instance_id, rom_path)
 
 
@@ -366,16 +329,12 @@ def gc_instance_create_emulator(
     boot_ipl: bool = False,
     info: str | None = None,
 ) -> dict:
-    """Create a new Dolphin emulator instance without starting it.
+    """Create a Dolphin instance and its configuration without booting it.
 
-    The instance is registered (so it appears in ``gc_instance_list`` /
-    ``gc_instance_status``) and its data directory is created, but Dolphin is
-    **not** launched. This lets you pre-register an instance id and configure it
-    (e.g. with ``gc_dolphin_config_set``) before booting it with
-    ``gc_instance_start``.
-
-    ``rom_path`` is a host-side path to a .iso/.gcm/.dol/.elf file. The config
-    arguments are the same as ``gc_instance_start``.
+    Registers the instance so it appears in ``gc_instance_list`` /
+    ``gc_instance_status``. Use it to pre-configure an instance (e.g. with
+    ``gc_dolphin_config_set``) and boot it later with ``gc_instance_start``.
+    ``rom_path`` is a host-side .iso/.gcm/.dol/.elf path.
     """
     return manager.create(
         instance_id,
@@ -407,28 +366,15 @@ def gc_instance_create_hardware(
 ) -> dict:
     """Register a real GameCube hardware instance.
 
-    A hardware instance represents a physical console that stays connected to
-    this host. It is *permanently remembered* (persisted to the server's data
-    dir) until it is explicitly removed with ``gc_instance_remove``.
-
-    Args:
-        instance_id: Unique id for the hardware instance (e.g. ``hw-001``).
-        capture_device: Video4Linux2 device path (default ``/dev/video0``).
-            Prefer a device reported with ``can_capture: true`` by
-            ``gc_hardware_devices``.
-        capture: Optional capture options, e.g. ``{"width": 640, "height": 480,
-            "format": "mjpg", "fps": 30, "flush_frames": 5,
-            "warmup_seconds": 5, "warmup_ttl": 60}``. ``warmup_seconds`` is how
-            long a cold capture card is streamed before grabbing a frame
-            (``0`` disables).
-        serial_devices: Up to four serial device paths that will act as the
-            GameCube controller ports (0-3). Controller driving is not yet
-            implemented, but the devices are remembered.
-        bba_ip: The console's own BBA IP (e.g. ``192.0.2.10``), used by
-            ``gc_instance_start`` to reach the Swiss netboot listener.
-        bba_port: The netboot listener port (default 4242).
-        info: Free-form description/annotation shown in list and status output.
+    The instance is persisted until removed with ``gc_instance_remove``. Set
+    ``capture_device`` to a V4L2 node, ``serial_devices`` for controller ports
+    (0-3), and ``bba_ip``/``bba_port`` for the Swiss netboot listener. ``info``
+    is a free-form annotation.
     """
+    # ``capture`` accepts V4L2 options: {width, height, format, fps,
+    # flush_frames, warmup_seconds, warmup_ttl}. ``warmup_seconds`` streams a
+    # cold capture card before grabbing a frame (0 disables); prefer a
+    # ``capture_device`` with can_capture: true from gc_hardware_devices.
     return hardware.register(
         instance_id,
         capture_device=capture_device,
@@ -442,11 +388,7 @@ def gc_instance_create_hardware(
 
 @mcp.tool()
 def gc_instance_list() -> list[dict]:
-    """List all known instances and their status.
-
-    Includes every Dolphin emulator instance (``kind: "dolphin"``) and every
-    registered real GameCube hardware instance (``kind: "gamecube-hw"``).
-    """
+    """List all known Dolphin and real-hardware instances with their status."""
     entries: list[dict] = []
     for inst in manager.list():
         entries.append({**inst, "kind": "dolphin"})
@@ -471,10 +413,11 @@ def gc_instance_status(instance_id: str) -> dict:
 def gc_instance_stop(instance_id: str, timeout: float = 5.0) -> dict:
     """Stop a running instance.
 
-    For a Dolphin instance this stops the emulator process. For real GameCube
-    hardware this returns the console to the Swiss menu (exiting the current
-    game) — a real console cannot be powered off over the netboot listener.
+    Dolphin: stops the emulator process. Hardware: returns the console to the
+    Swiss menu (a real console cannot be powered off remotely).
     """
+    # A real console can only be returned to Swiss; it cannot be powered off
+    # over the netboot listener, so hardware stops via A+Z+START.
     dol = manager.get_or_none(instance_id)
     if dol is not None:
         return manager.stop(instance_id, timeout=timeout)
@@ -488,9 +431,8 @@ def gc_instance_stop(instance_id: str, timeout: float = 5.0) -> dict:
 def gc_instance_remove(instance_id: str) -> dict:
     """Stop and delete an instance.
 
-    For a Dolphin instance this stops the emulator and deletes its data
-    directory. For real GameCube hardware this forgets the registered console
-    (and any capture handles); the console itself is not affected.
+    Dolphin: stops the emulator and deletes its data directory. Hardware: forgets
+    the registered console; the console itself is unaffected.
     """
     dol = manager.get_or_none(instance_id)
     if dol is not None:
@@ -506,15 +448,14 @@ def gc_instance_remove(instance_id: str) -> dict:
 # ---------------------------------------------------------------------------
 @mcp.tool()
 def gc_hardware_devices() -> list[dict]:
-    """Probe the Video4Linux2 capture devices present on this host.
+    """List the Video4Linux2 capture devices on this host.
 
-    A real GameCube registers one of these (e.g. ``/dev/video0``) as its
-    ``capture_device`` so the server can grab frames from the console. Each
-    entry reports the node, its card name, the pixel formats it offers, and
-    whether it can actually capture video frames (``can_capture``). Some nodes
-    expose only UVC metadata and cannot produce a video stream, so prefer one
-    with ``can_capture: true``.
+    Each entry shows the node, card name, formats, and whether it can capture
+    video (``can_capture``). Prefer a node with ``can_capture: true`` as a
+    hardware instance's ``capture_device``.
     """
+    # Some nodes expose only UVC metadata and cannot produce a video stream,
+    # so ``can_capture`` filters those out.
     return detect_video_devices()
 
 
@@ -530,9 +471,8 @@ def gc_hardware_update(
 ) -> dict:
     """Update a registered hardware instance's settings and persist them.
 
-    Use this to set the console's ``bba_ip`` (its own IP) so ``gc_instance_start``
-    can reach the Swiss netboot listener, or to change the capture device / ports
-    / ``info`` annotation.
+    Use it to set ``bba_ip``/``bba_port`` for netboot, or change the capture
+    device, serial ports, or ``info``.
     """
     return hardware.update(
         instance_id,
@@ -547,13 +487,12 @@ def gc_hardware_update(
 
 @mcp.tool()
 def gc_log(instance_id: str, tail: int | None = None, grep: str | None = None) -> dict:
-    """Read this instance's Dolphin log file (``<user_dir>/dolphin.log``).
+    """Read an instance's log (crashes, ROM console output, warnings).
 
-    Useful for diagnosing crashes, OSReport output from the ROM, or emulator
-    warnings. ``grep`` keeps only lines containing the (case-insensitive)
-    substring. ``tail`` returns only the last ``tail`` lines of the (possibly
-    filtered) output. Returns the matching lines and some metadata.
+    ``grep`` keeps lines containing the (case-insensitive) substring; ``tail``
+    limits to the last N matching lines. Returns the lines plus metadata.
     """
+    # The log lives at <user_dir>/dolphin.log.
     inst = _instance(instance_id)
     return inst.read_log(tail=tail, grep=grep)
 
@@ -592,11 +531,10 @@ def gc_capture_backends() -> dict:
 
 @mcp.tool()
 def gc_capture_configure(instance_id: str, **opts: Any) -> dict:
-    """Configure the capture backend of an instance (e.g. display, screen_size).
+    """Configure an instance's capture backend (display, screen_size, format, ...).
 
-    For a real GameCube hardware instance, this updates the V4L2 capture device
-    / resolution / format and persists the change. ``opts`` may include a
-    ``capture`` dict of capture options.
+    For hardware this updates the V4L2 capture device/resolution/format and
+    persists it; ``opts`` may include a ``capture`` dict of options.
     """
     inst = _instance(instance_id)
     return inst.capture_configure(**opts)
@@ -630,10 +568,10 @@ def gc_capture_screenshot(instance_id: str, filename: str | None = None,
 # ---------------------------------------------------------------------------
 @mcp.tool()
 def gc_controller_press(instance_id: str, port: int, button: str) -> dict:
-    """Press (hold) a button on a GameCube controller port.
+    """Press and hold a button on a controller port.
 
-    Buttons: A, B, X, Y, Z, START, L, R, D_UP, D_DOWN, D_LEFT, D_RIGHT.
-    Remember to call gc_controller_release (or use gc_controller_sequence).
+    Buttons: A, B, X, Y, Z, START, L, R, D_UP, D_DOWN, D_LEFT, D_RIGHT. Release
+    it with gc_controller_release (or use gc_controller_sequence).
     """
     inst = _instance(instance_id)
     inst.controller_press(port, button)
@@ -651,14 +589,11 @@ def gc_controller_release(instance_id: str, port: int, button: str) -> dict:
 @mcp.tool()
 def gc_controller_press_once(instance_id: str, port: int, button: str,
                              hold_duration: float = 200.0) -> dict:
-    """Tap a button once: press, hold for hold_duration ms, then release.
+    """Tap a button once: press, hold ``hold_duration`` ms, then release.
 
-    This is the recommended way to send a button press for agent use. It is a
-    single atomic action — you do not need to pair gc_controller_press and
-    gc_controller_release. The button is always released afterwards.
-
-    hold_duration defaults to 200 ms. Pass a larger value to hold the button
-    longer (e.g. to hold START through a loading screen).
+    A single atomic action — no need to pair press/release, and the button is
+    always released. ``hold_duration`` defaults to 200 ms; use a larger value to
+    hold through a loading screen.
     """
     inst = _instance(instance_id)
     inst.controller_press_once(port, button, hold_duration)
@@ -670,12 +605,9 @@ def gc_controller_flick(instance_id: str, port: int, stick: str,
                         x: float, y: float, hold_duration: float = 200.0) -> dict:
     """Flick an analog stick: push to (x, y), hold, then return to centre.
 
-    This is the analog counterpart to gc_controller_press_once — a single atomic
-    action you can use for menu navigation (e.g. nudge the stick up/down to move
-    a cursor) without pairing set_stick/reset calls.
-
-    stick is 'main' or 'c'. x/y are in -1..1 (0,0 = centre). The stick is always
-    returned to centre afterwards. hold_duration defaults to 200 ms.
+    The analog counterpart to gc_controller_press_once — one atomic action for
+    menu navigation. ``stick`` is 'main' or 'c'; x/y are in -1..1 (0,0 = centre);
+    ``hold_duration`` defaults to 200 ms. The stick is always re-centred.
     """
     inst = _instance(instance_id)
     inst.controller_flick(port, stick, x, y, hold_duration)
@@ -715,9 +647,10 @@ def gc_controller_sequence(instance_id: str, port: int, steps: list[dict],
       {"t": ms, "type": "trigger", "trigger": "L", "value": 1.0}
       {"t": ms, "type": "wait"}
       {"t": ms, "type": "reset"}
-    The sequence runs on a background thread. Use gc_controller_sequence_cancel
-    to stop it.
+    Use gc_controller_sequence_cancel to stop it.
     """
+    # The sequence runs on a background thread; the returned sequence_id is used
+    # to cancel it.
     inst = _instance(instance_id)
     return inst.controller_sequence(port, steps, loop=loop)
 
@@ -752,8 +685,8 @@ def gc_controller_reset(instance_id: str, port: int) -> dict:
 def gc_memory_read(instance_id: str, address: int, length: int) -> dict:
     """Read bytes from the emulated GameCube RAM.
 
-    address is a Dolphin emulated address (e.g. 0x80000000 for the start of
-    MEM1). Returns a hex string. Fails gracefully if memory is not available.
+    ``address`` is an emulated address (e.g. 0x80000000 = start of MEM1). Returns
+    the data as a hex string.
     """
     inst = _instance(instance_id)
     data = inst.memory_read(address, length)
@@ -769,8 +702,8 @@ def gc_memory_read(instance_id: str, address: int, length: int) -> dict:
 def gc_memory_write(instance_id: str, address: int, data: str) -> dict:
     """Write bytes to the emulated GameCube RAM.
 
-    data is a hex string (e.g. "00010203"). address is a Dolphin emulated
-    address. Fails gracefully if memory is not available.
+    ``data`` is a hex string (e.g. "00010203"); ``address`` is an emulated
+    address.
     """
     inst = _instance(instance_id)
     raw = bytes.fromhex(data)
@@ -780,19 +713,14 @@ def gc_memory_write(instance_id: str, address: int, data: str) -> dict:
 
 @mcp.tool()
 def gc_memory_read_struct(instance_id: str, address: int, fmt: str) -> dict:
-    """Read memory at ``address`` and unpack it with a Python ``struct`` format.
+    """Read memory and unpack it with a Python ``struct`` format.
 
-    ``fmt`` is a Python :mod:`struct` format string, e.g. ``">12f"`` for twelve
-    big-endian floats (a 3x4 transform matrix), ``">II"`` for two big-endian
-    u32 values, or ``">4h"`` for four big-endian s16 values.
-
-    GameCube is big-endian, so include a byte-order prefix in ``fmt``: ``>``
-    (big-endian, standard sizes) or ``!`` (network order). If you omit it the
-    format uses the host's native byte order/sizes, which is almost never what
-    you want for a GameCube, so it is recommended to always prefix with ``>``.
-
-    The result ``values`` is a list of the unpacked values in format order.
+    ``fmt`` is a :mod:`struct` format string. GameCube is big-endian, so prefix
+    it with ``>`` (or ``!``), e.g. ``">12f"`` for twelve floats or ``">II"`` for
+    two u32s. Returns the values in format order.
     """
+    # Without a '>'/'!' prefix struct uses the host's native byte order/sizes,
+    # which is almost never right for a GameCube; always prefix with '>'.
     inst = _instance(instance_id)
     try:
         size = struct.calcsize(fmt)
@@ -813,11 +741,8 @@ def gc_memory_write_struct(instance_id: str, address: int, fmt: str,
                            values: list[Any]) -> dict:
     """Pack ``values`` with a Python ``struct`` format and write them to memory.
 
-    ``fmt`` is a Python :mod:`struct` format string (see
-    ``gc_memory_read_struct`` for the byte-order notes). ``values`` is a list of
-    the values to pack, in format order, e.g. for ``">12f"`` pass 12 floats.
-
-    Returns the number of bytes written.
+    ``fmt`` is a :mod:`struct` format string (prefix with ``>`` for big-endian;
+    see ``gc_memory_read_struct``). ``values`` are packed in format order.
     """
     inst = _instance(instance_id)
     try:
@@ -834,31 +759,28 @@ def gc_memory_write_struct(instance_id: str, address: int, fmt: str,
 # ---------------------------------------------------------------------------
 @mcp.tool()
 def gc_dolphin_toggle_pause(instance_id: str) -> dict:
-    """Toggle the emulator's pause state (Dolphin's Toggle Pause hotkey, F10).
+    """Toggle the emulator's pause state (Dolphin's Toggle Pause, F10).
 
-    Use this to pause a game (e.g. before inspecting memory or screen), then
-    resume. When paused, ``gc_dolphin_step_frame`` advances exactly one frame.
-
-    This injects a keystroke into the instance's X display via ``xdotool``, so
-    it requires the ``xvfb`` capture backend and ``xdotool`` installed. On a
-    headless ``--batch`` instance Dolphin's ``[Input] BackgroundInput = True``
-    keeps the input gate open so the hotkey is received without window focus.
+    Pause a game (e.g. before inspecting memory or screen), then resume. When
+    paused, ``gc_dolphin_step_frame`` advances exactly one frame.
     """
+    # Injects the hotkey keystroke into the instance's X display via xdotool, so
+    # it needs the xvfb capture backend and xdotool. Dolphin's
+    # [Input] BackgroundInput = True keeps the input gate open without focus.
     inst = _instance(instance_id)
     return inst.emulator_toggle_pause()
 
 
 @mcp.tool()
 def gc_dolphin_step_frame(instance_id: str) -> dict:
-    """Advance exactly one frame when the emulator is paused.
+    """Advance exactly one video frame while paused.
 
-    Sends Dolphin's Frame Advance hotkey. Unlike ``Step Into`` (a CPU-debugger
-    step), Frame Advance steps one *video frame*, which is what a TAS tool wants.
-
-    The instance config binds Frame Advance to ``F8`` by default (see
-    ``gc_dolphin_hotkey_get``/``gc_dolphin_hotkey_set``). If it is unbound this tool
-    returns ``ok=False`` and no frame advances.
+    Uses Dolphin's Frame Advance hotkey (F8 by default; see
+    ``gc_dolphin_hotkey_get`` / ``gc_dolphin_hotkey_set``). Returns ``ok=False``
+    if the hotkey is unbound.
     """
+    # Frame Advance steps one *video frame*, unlike Step Into (a CPU-debugger
+    # step). If unbound, no frame advances.
     inst = _instance(instance_id)
     return inst.emulator_step_frame()
 
@@ -866,15 +788,13 @@ def gc_dolphin_step_frame(instance_id: str) -> dict:
 @mcp.tool()
 def gc_dolphin_save_state(instance_id: str, slot: int,
                           copy_dir: str | None = None) -> dict:
-    """Save a save-state to ``slot`` (1-8) via Shift+F{slot}, then copy it.
+    """Save a save-state to ``slot`` (1-8) and copy it out.
 
-    Only slots 1-8 have a Dolphin default hotkey binding (see
-    ``gc_dolphin_hotkey_get``).
-
-    After saving, the state file is copied into ``copy_dir`` (or the server's
-    configured states directory, ``<data>/states``, by default). The result
-    includes ``copied``, ``state_file`` and ``copied_to``.
+    Without ``copy_dir`` the state is copied to the server's states directory
+    (``<data>/states``) so it survives instance removal. The result includes
+    ``copied``, ``state_file`` and ``copied_to``.
     """
+    # Only slots 1-8 have Dolphin default hotkey bindings (Shift+F{slot}).
     if not 1 <= slot <= 8:
         return {"ok": False, "error": f"slot must be 1-8, got {slot}"}
     inst = _instance(instance_id)
@@ -884,11 +804,8 @@ def gc_dolphin_save_state(instance_id: str, slot: int,
 
 @mcp.tool()
 def gc_dolphin_load_state(instance_id: str, slot: int) -> dict:
-    """Load a save-state from ``slot`` (1-8) via F{slot}.
-
-    Only slots 1-8 have a Dolphin default hotkey binding (see
-    ``gc_dolphin_hotkey_get``).
-    """
+    """Load a save-state from ``slot`` (1-8)."""
+    # Load uses Dolphin's default F{slot} hotkey binding.
     if not 1 <= slot <= 8:
         return {"ok": False, "error": f"slot must be 1-8, got {slot}"}
     inst = _instance(instance_id)
@@ -897,20 +814,21 @@ def gc_dolphin_load_state(instance_id: str, slot: int) -> dict:
 
 @mcp.tool()
 def gc_dolphin_freeze(instance_id: str) -> dict:
-    """Hard-freeze the Dolphin process with SIGSTOP.
+    """Hard-freeze the Dolphin process.
 
-    This is a coarse OS-level pause that always works (no X display or xdotool
-    needed). It is *not* compatible with frame-advance (the process is suspended,
-    so it cannot process hotkeys); use ``gc_dolphin_toggle_pause`` for a
-    TAS-friendly pause.
+    A coarse OS-level pause that always works, but frame-advance is unavailable
+    while frozen; use ``gc_dolphin_toggle_pause`` for TAS-style stepping.
     """
+    # SIGSTOP needs no X display or xdotool, but the suspended process cannot
+    # process the frame-advance hotkey.
     inst = _instance(instance_id)
     return inst.emulator_freeze()
 
 
 @mcp.tool()
 def gc_dolphin_unfreeze(instance_id: str) -> dict:
-    """Resume a frozen Dolphin process with SIGCONT."""
+    """Resume a frozen Dolphin process."""
+    # SIGCONT resumes a process suspended by gc_dolphin_freeze (SIGSTOP).
     inst = _instance(instance_id)
     return inst.emulator_unfreeze()
 
@@ -920,10 +838,7 @@ def gc_dolphin_unfreeze(instance_id: str) -> dict:
 # ---------------------------------------------------------------------------
 @mcp.tool()
 def gc_dolphin_config_get(instance_id: str, section: str, key: str) -> dict:
-    """Read a single Dolphin.ini configuration value for an instance.
-
-    This is Dolphin-only (real hardware has no such config).
-    """
+    """Read a Dolphin.ini configuration value (Dolphin-only)."""
 
     inst = _instance(instance_id)
     ini = inst.instance.spec.user_dir / "Config" / "Dolphin.ini"
@@ -937,10 +852,8 @@ def gc_dolphin_config_get(instance_id: str, section: str, key: str) -> dict:
 
 @mcp.tool()
 def gc_dolphin_config_set(instance_id: str, section: str, key: str, value: str) -> dict:
-    """Set a single Dolphin.ini configuration value for an instance.
-
-    Writes to the instance's Config/Dolphin.ini. This is Dolphin-only.
-    """
+    """Set a Dolphin.ini configuration value (Dolphin-only)."""
+    # Writes to the instance's Config/Dolphin.ini.
     inst = _instance(instance_id)
     ini = inst.instance.spec.user_dir / "Config" / "Dolphin.ini"
     import configparser
@@ -957,10 +870,9 @@ def gc_dolphin_config_set(instance_id: str, section: str, key: str, value: str) 
 
 @mcp.tool()
 def gc_dolphin_config_apply_profile(instance_id: str, profile: dict[str, dict[str, str]]) -> dict:
-    """Apply a whole Dolphin.ini profile (a dict of section -> {key: value}).
+    """Apply a Dolphin.ini profile (section -> {key: value}; Dolphin-only).
 
-    This is Dolphin-only. Existing keys in the same section are preserved unless
-    overridden by the profile.
+    Existing keys in a section are preserved unless the profile overrides them.
     """
     inst = _instance(instance_id)
     ini = inst.instance.spec.user_dir / "Config" / "Dolphin.ini"
@@ -982,12 +894,10 @@ def gc_dolphin_config_apply_profile(instance_id: str, profile: dict[str, dict[st
 
 @mcp.tool()
 def gc_dolphin_hotkey_get(instance_id: str, key: str) -> dict:
-    """Read a Dolphin emulator hotkey binding.
+    """Read a Dolphin hotkey binding (Dolphin-only).
 
-    ``key`` is the Hotkeys.ini key ``<group>/<control>`` (e.g.
-    ``General/Toggle Pause``, ``Save State/Save State Slot 1``). Returns the
-    current binding expression (``F10``, ``@(Shift+F1)``), or None if the hotkey
-    is unbound. This is Dolphin-only (real hardware has no emulator hotkeys).
+    ``key`` is ``<group>/<control>`` (e.g. ``General/Toggle Pause``). Returns the
+    binding expression (e.g. ``F10``, ``@(Shift+F1)``) or None if unbound.
     """
     from .keyboard import DEFAULT_HOTKEYS, read_hotkeys_ini
 
@@ -1008,21 +918,16 @@ def gc_dolphin_hotkey_get(instance_id: str, key: str) -> dict:
 
 @mcp.tool()
 def gc_dolphin_hotkey_set(instance_id: str, key: str, expression: str) -> dict:
-    """Set (or clear) a Dolphin emulator hotkey binding.
+    """Set or clear a Dolphin hotkey binding (Dolphin-only).
 
-    ``key`` is the Hotkeys.ini key ``<group>/<control>``. ``expression`` is the
-    binding in Dolphin input syntax, e.g. ``F8`` for a single key or
-    ``@(Shift+F8)`` for a combination. Pass ``expression=""`` to unbind it.
-
-    Dolphin loads ``Hotkeys.ini`` all-or-nothing, so this preserves every
-    existing binding and the built-in default set, then applies ``key``. A
-    running instance may need a restart for the change to take effect. This is
-    Dolphin-only.
-
-    Common keys (see ``gc_dolphin_*`` tools): ``General/Toggle Pause``,
-    ``Frame Advance/Frame Advance``, ``Save State/Save State Slot 1..8``,
-    ``Load State/Load State Slot 1..8``.
+    ``key`` is ``<group>/<control>``; ``expression`` is Dolphin input syntax
+    (``F8``, ``@(Shift+F8)``); pass ``""`` to unbind. A running instance may need
+    a restart for the change to take effect.
     """
+    # Dolphin loads Hotkeys.ini all-or-nothing, so start from the built-in
+    # defaults, layer any existing file on top, then apply this key. Common keys
+    # used by gc_* tools: General/Toggle Pause, Frame Advance/Frame Advance,
+    # Save State/Save State Slot 1..8, Load State/Load State Slot 1..8.
     from .keyboard import DEFAULT_HOTKEYS, read_hotkeys_ini, write_hotkeys_ini
 
     inst = _instance(instance_id)
