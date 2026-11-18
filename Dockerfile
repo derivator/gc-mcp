@@ -48,7 +48,10 @@ ENV PATH="/root/.local/bin:${PATH}"
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-RUN uv sync --frozen --no-dev
+# The 'ocr' extra enables optional text extraction via
+# gc_capture_screenshot(ocr=True). RapidOCR bundles its ONNX models, so no
+# download is needed at runtime. Drop the extra to slim the image.
+RUN uv sync --frozen --no-dev --extra ocr
 
 # ---------------------------------------------------------------------------
 # Runtime

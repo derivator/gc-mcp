@@ -27,8 +27,10 @@ from mcp.server.mcpserver import MCPServer
 
 from .capture import detect_video_devices
 from .config import ServerConfig, shm_usage
-from .errors import NotFoundError
+from .errors import NotFoundError, OcrError
 from .instances import HardwareManager, InstanceManager
+from .ocr import extract_text
+from .ocr import status as ocr_status
 from .platform import resolve_platform
 from .platform.dolphin import DolphinPlatform
 from .platform.gamecube_hw import GameCubeHWPlatform
@@ -113,6 +115,11 @@ SERVER_INSTRUCTIONS = (
     "- GameCube is big-endian. When reading/writing memory with "
     "gc_memory_read_struct / gc_memory_write_struct, prefix the format with '>' "
     "(or '!'), e.g. \">12f\" for a 3x4 float matrix.\n\n"
+    "Screen reading:\n"
+    "- Pass ocr=True to gc_capture_screenshot to extract on-screen text with "
+    "RapidOCR; it returns recognised lines plus per-word boxes. OCR is "
+    "optional (needs the 'ocr' extra); if unavailable the screenshot is still "
+    "returned with ocr.available=false and an error.\n\n"
     "Emulator control:\n"
     "- Use gc_dolphin_toggle_pause to pause (e.g. before inspecting memory), "
     "gc_dolphin_step_frame to advance one frame while paused, and "
@@ -183,6 +190,19 @@ def _captures_dir() -> Path:
     return config.captures_dir
 
 
+def _ocr_result(path: Path, lang: str | None) -> dict:
+    """Run OCR on a saved capture, reporting failures inside the result.
+
+    The screenshot has already been written, so an unavailable OCR dependency
+    should not discard a successful capture; return the error as part of the
+    result instead of raising.
+    """
+    try:
+        return extract_text(path, lang=lang or config.ocr_lang)
+    except OcrError as exc:
+        return {"available": False, "error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
 # Server info
 # ---------------------------------------------------------------------------
@@ -207,6 +227,8 @@ def gc_server_info() -> dict:
         "ipl_available": config.ipl_available(),
         "ipl_regions": config.ipl_regions(),
         "ipl_dir": str(config.ipl_dir) if config.ipl_dir else None,
+        "ocr": ocr_status(),
+        "ocr_lang": config.ocr_lang,
         "hardware_file": str(config.hardware_file),
         "hardware_instances": len(hardware),
         "instances": len(manager),
@@ -542,10 +564,16 @@ def gc_capture_configure(instance_id: str, **opts: Any) -> dict:
 
 @mcp.tool()
 def gc_capture_screenshot(instance_id: str, filename: str | None = None,
-                          include_base64: bool = False) -> dict:
+                          include_base64: bool = False,
+                          ocr: bool = False,
+                          ocr_lang: str | None = None) -> dict:
     """Capture the current frame of an instance to a PNG.
 
     Returns the path to the saved PNG, and optionally base64-encoded image data.
+    Set ``ocr=True`` to also extract on-screen text with RapidOCR (optional;
+    requires the ``ocr`` extra). ``ocr_lang`` is a RapidOCR language code
+    (common Tesseract codes work too), defaulting to ``GC_MCP_OCR_LANG``
+    (``en``).
     """
     inst = _instance(instance_id)
     captures = _captures_dir()
@@ -560,6 +588,10 @@ def gc_capture_screenshot(instance_id: str, filename: str | None = None,
     if include_base64:
         result["data_base64"] = base64.b64encode(path.read_bytes()).decode("ascii")
         result["mime_type"] = "image/png"
+    if ocr:
+        # OCR runs on the saved PNG, so it works the same for every backend
+        # (xvfb, frame dump or a V4L2 capture card).
+        result["ocr"] = _ocr_result(path, ocr_lang)
     return result
 
 

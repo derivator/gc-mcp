@@ -13,8 +13,11 @@ dependencies = [
 
 [project.optional-dependencies]
 memory = ["dolphin-memory-engine>=1.3.0"]
+ocr = ["rapidocr>=3.10.0", "onnxruntime>=1.17"]
 all = [
     "dolphin-memory-engine>=1.3.0",
+    "rapidocr>=3.10.0",
+    "onnxruntime>=1.17",
 ]
 
 [project.scripts]

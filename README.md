@@ -20,7 +20,8 @@ required.
 - **Controller input** — all four ports, with digital buttons, analog sticks and
   triggers, atomic taps and stick flicks, and timed input sequences.
 - **Screen capture** — save the current frame to PNG from a headless Xvfb
-  display, Dolphin's frame dump, or a Video4Linux2 capture card.
+  display, Dolphin's frame dump, or a Video4Linux2 capture card, with optional
+  OCR text extraction.
 - **Memory access** — read and write emulated GameCube RAM, with `struct`-based
   helpers for typed values.
 - **Emulator control** — pause, single-frame step, and save/load state.
@@ -48,11 +49,15 @@ uv sync
 ```
 
 This creates the virtual environment and installs the `gc-mcp` entry point.
-To add the optional memory backend:
+Optional extras:
 
 ```bash
-uv sync --extra memory
+uv sync --extra memory   # dolphin-memory-engine backend
+uv sync --extra ocr      # RapidOCR for gc_capture_screenshot(ocr=True)
 ```
+
+The OCR extra installs `rapidocr` with its ONNX Runtime backend. The PP-OCR
+models are bundled in the wheel, so OCR works offline (no first-run download).
 
 ## Usage
 
@@ -98,6 +103,24 @@ gc_capture_screenshot("game-1")
 
 `gc_instance_start` also **relaunches** an existing instance with a new ROM.
 Note that it stops whatever is currently running first.
+
+### Read on-screen text (OCR)
+
+Pass `ocr=True` to also run RapidOCR (PP-OCR on ONNX Runtime) over the captured
+frame:
+
+```python
+shot = gc_capture_screenshot("game-1", ocr=True)
+print(shot["ocr"]["text"])   # recognised lines, e.g. menu options
+shot["ocr"]["lines"]         # per-line text, confidence and boxes
+shot["ocr"]["words"]         # per-word boxes and confidences
+```
+
+OCR is optional and best-effort: if `rapidocr` or `onnxruntime` is missing, the
+PNG is still saved and `shot["ocr"]` is
+`{"available": False, "error": "..."}`. Use `ocr_lang="de"` (or set
+`GC_MCP_OCR_LANG`) for a non-English game; common Tesseract codes such as
+`deu` are mapped automatically.
 
 ### Drive the controller
 
@@ -204,6 +227,7 @@ emulation defaults below.
 | `GC_MCP_GPU_DEVICE` | auto-detected | DRM device, e.g. `/dev/dri/card2` |
 | `GC_MCP_VGL_3D_DISPLAY` | empty | 3D X display for VirtualGL's GLX backend, e.g. `:0.0` |
 | `GC_MCP_MEMORY_BACKEND` | `process_vm` | `process_vm` or `dolphin_engine` |
+| `GC_MCP_OCR_LANG` | `en` | RapidOCR language for `gc_capture_screenshot(ocr=True)` |
 
 ### Real hardware defaults
 

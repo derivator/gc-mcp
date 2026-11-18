@@ -94,3 +94,13 @@ class NetbootError(GCMCPError):
     """
 
     code = -32010
+
+
+class OcrError(GCMCPError):
+    """Optional OCR (text extraction) is unavailable or failed.
+
+    Raised when OCR is requested but ``rapidocr`` or ``onnxruntime`` is
+    missing, or when RapidOCR cannot read the image.
+    """
+
+    code = -32011

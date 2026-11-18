@@ -230,6 +230,11 @@ class ServerConfig:
     # Memory
     memory_backend: str = field(default_factory=lambda: _env_str("GC_MCP_MEMORY_BACKEND", "process_vm"))
 
+    # OCR (optional; used by gc_capture_screenshot(ocr=True))
+    #: RapidOCR language (e.g. ``en``, ``de``, ``japan``) used when OCR is
+    #: requested. Common Tesseract codes (``eng``, ``deu``) are also accepted.
+    ocr_lang: str = field(default_factory=lambda: _env_str("GC_MCP_OCR_LANG", "en"))
+
     # GameCube IPL (boot ROM)
     #: Folder containing GameCube IPL files, one region subfolder per region
     #: (each holding an ``IPL.bin``). When set, instances can boot the original

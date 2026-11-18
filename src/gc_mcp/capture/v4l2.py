@@ -423,11 +423,17 @@ class V4L2Capture(CaptureBackend):
         # real content. This both warms the card and writes a usable frame.
         key = self._warm_key()
         if self.warmup_seconds > 0 and self._needs_warmup(key):
-            try:
-                if has_cv and self.opencv_first:
+            if has_cv and self.opencv_first:
+                try:
                     result = self._capture_warmup_opencv(dest_path)
-                else:
-                    result = self._capture_warmup_ffmpeg(dest_path)
+                    self._mark_warm(key)
+                    return result
+                except CaptureError:
+                    # OpenCV may not support this device; try ffmpeg's warm-up
+                    # before falling back to a single frame.
+                    pass
+            try:
+                result = self._capture_warmup_ffmpeg(dest_path)
                 self._mark_warm(key)
                 return result
             except CaptureError:
